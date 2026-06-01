@@ -7,6 +7,7 @@ import { forceSyncToBackend } from '../services/autoSync';
 import { GitHubApiService } from '../services/githubApi';
 import { ReadmeModal } from './ReadmeModal';
 import { Modal } from './Modal';
+import { FloatingTooltip } from './FloatingTooltip';
 import { useDialog } from '../hooks/useDialog';
 
 interface SubscriptionRepoCardProps {
@@ -39,12 +40,38 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
   // 取消Star确认对话框状态
   const [unstarConfirmOpen, setUnstarConfirmOpen] = useState(false);
   const [pendingUnstarAction, setPendingUnstarAction] = useState<(() => void) | null>(null);
+  const [descTooltip, setDescTooltip] = useState(false);
+  const [aiTooltip, setAiTooltip] = useState(false);
+  const descTriggerRef = useRef<HTMLDivElement>(null);
+  const aiTriggerRef = useRef<HTMLDivElement>(null);
+  const descHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const aiHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleHideDesc = useCallback(() => {
+    if (descHideTimerRef.current) clearTimeout(descHideTimerRef.current);
+    descHideTimerRef.current = setTimeout(() => setDescTooltip(false), 150);
+  }, []);
+
+  const cancelHideDesc = useCallback(() => {
+    if (descHideTimerRef.current) clearTimeout(descHideTimerRef.current);
+  }, []);
+
+  const scheduleHideAi = useCallback(() => {
+    if (aiHideTimerRef.current) clearTimeout(aiHideTimerRef.current);
+    aiHideTimerRef.current = setTimeout(() => setAiTooltip(false), 150);
+  }, []);
+
+  const cancelHideAi = useCallback(() => {
+    if (aiHideTimerRef.current) clearTimeout(aiHideTimerRef.current);
+  }, []);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
+      if (descHideTimerRef.current) clearTimeout(descHideTimerRef.current);
+      if (aiHideTimerRef.current) clearTimeout(aiHideTimerRef.current);
     };
   }, []);
   
@@ -251,6 +278,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
         ai_platforms: result.platforms,
         analyzed_at: result.analyzed_at,
         analysis_failed: result.analysis_failed,
+        analysis_error: undefined,
       };
       updateDiscoveryRepo(updatedRepo);
       
@@ -260,11 +288,15 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
     } catch (error) {
       if (!controller.signal.aborted) {
         console.error('AI analysis error:', error);
-        const failedResult = createFailedAnalysisResult();
+        const errorMsg = error instanceof Error && error.message
+          ? error.message
+          : t('AI分析失败，请检查AI配置和网络连接', 'AI analysis failed, please check AI configuration and network connection');
+        const failedResult = createFailedAnalysisResult(errorMsg);
         const failedRepo: DiscoveryRepo = {
           ...repo,
           analyzed_at: failedResult.analyzed_at,
           analysis_failed: failedResult.analysis_failed,
+          analysis_error: failedResult.analysis_error,
         };
         updateDiscoveryRepo(failedRepo);
         toast(t('AI分析失败，请检查AI配置。', 'AI analysis failed. Please check your AI configuration.'), 'error');
@@ -398,18 +430,52 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
 
           {/* Description */}
           {repo.description && (
-            <p className="text-sm text-gray-700 dark:text-text-tertiary mb-3 line-clamp-2">
-              {repo.description}
-            </p>
+            <div
+              ref={descTriggerRef}
+              className="relative mb-3"
+              onMouseEnter={() => { cancelHideDesc(); setDescTooltip(true); }}
+              onMouseLeave={scheduleHideDesc}
+              onFocus={() => { cancelHideDesc(); setDescTooltip(true); }}
+              onBlur={scheduleHideDesc}
+              onTouchStart={() => setDescTooltip((v) => !v)}
+              tabIndex={0}
+            >
+              <p className="text-sm text-gray-700 dark:text-text-tertiary line-clamp-2 rounded px-1 -mx-1 hover:bg-gray-50/50 dark:hover:bg-white/[0.02] transition-colors duration-200">
+                {repo.description}
+              </p>
+              <FloatingTooltip
+                content={repo.description}
+                visible={descTooltip}
+                triggerRef={descTriggerRef}
+                onMouseEnter={cancelHideDesc}
+                onMouseLeave={scheduleHideDesc}
+              />
+            </div>
           )}
 
           {/* AI Summary */}
           {repo.ai_summary && (
-            <div className="flex items-start gap-1.5 mb-3">
+            <div
+              ref={aiTriggerRef}
+              className="relative flex items-start gap-1.5 mb-3"
+              onMouseEnter={() => { cancelHideAi(); setAiTooltip(true); }}
+              onMouseLeave={scheduleHideAi}
+              onFocus={() => { cancelHideAi(); setAiTooltip(true); }}
+              onBlur={scheduleHideAi}
+              onTouchStart={() => setAiTooltip((v) => !v)}
+              tabIndex={0}
+            >
               <Bot className="w-4 h-4 text-gray-700 dark:text-text-secondary flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-gray-700 dark:text-text-secondary line-clamp-2">
+              <p className="text-sm text-gray-700 dark:text-text-secondary line-clamp-2 rounded px-1 -mx-1 hover:bg-gray-50/50 dark:hover:bg-white/[0.02] transition-colors duration-200">
                 {repo.ai_summary}
               </p>
+              <FloatingTooltip
+                content={repo.ai_summary}
+                visible={aiTooltip}
+                triggerRef={aiTriggerRef}
+                onMouseEnter={cancelHideAi}
+                onMouseLeave={scheduleHideAi}
+              />
             </div>
           )}
 

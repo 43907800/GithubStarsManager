@@ -16,6 +16,7 @@ import {
   ForkRepo,
   WorkflowDefinition,
 } from '../types';
+import { logger } from './logger';
 
 interface GitHubStarredItem {
   starred_at?: string;
@@ -56,12 +57,16 @@ export class GitHubApiService {
     this.token = token;
   }
 
-  private async makeRequest<T>(endpoint: string, options: RequestInit = {}, signal?: AbortSignal): Promise<T> {
+  private async makeRequest<T>(endpoint: string, options: RequestInit & { operationTag?: string } = {}, signal?: AbortSignal): Promise<T> {
+    const startTime = Date.now();
+    const method = (options.method || 'GET') as string;
+    const { operationTag, ...fetchOptions } = options;
+
     // Check rate limit before making request
     if (this.rateLimitRemaining !== null && this.rateLimitRemaining < 100 && this.rateLimitReset !== null) {
       const waitMs = (this.rateLimitReset * 1000) - Date.now();
       if (waitMs > 0) {
-        console.log(`Rate limit low (${this.rateLimitRemaining}), waiting ${Math.ceil(waitMs / 1000)}s for reset...`);
+        logger.warn('githubApi', 'Rate limit low, waiting for reset', { remaining: this.rateLimitRemaining, resetTime: this.rateLimitReset });
         // Honor abort signal during rate limit wait
         await new Promise<void>((resolve, reject) => {
           const timeoutId = setTimeout(() => resolve(), waitMs + 1000);
@@ -82,16 +87,23 @@ export class GitHubApiService {
       }
     }
 
-    const response = await fetch(`${GITHUB_API_BASE}${endpoint}`, {
-      ...options,
-      signal,
-      headers: {
-        'Authorization': `Bearer ${this.token}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        ...options.headers,
-      },
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${GITHUB_API_BASE}${endpoint}`, {
+        ...fetchOptions,
+        signal,
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...fetchOptions.headers,
+        },
+      });
+    } catch (fetchError) {
+      const durationMs = Date.now() - startTime;
+      logger.error('githubApi', 'API request network error', { method, endpoint, durationMs, error: fetchError instanceof Error ? fetchError.message : String(fetchError) });
+      throw fetchError;
+    }
 
     // Parse rate limit headers
     const remaining = response.headers.get('X-RateLimit-Remaining');
@@ -104,16 +116,48 @@ export class GitHubApiService {
     }
 
     if (!response.ok) {
+      const durationMs = Date.now() - startTime;
       if (response.status === 401) {
+        logger.warn('githubApi', 'API request failed: unauthorized', { method, endpoint, status: response.status, durationMs });
         throw new Error('GitHub token expired or invalid');
       }
       if (response.status === 403 && this.rateLimitRemaining === 0) {
         const resetDate = this.rateLimitReset
           ? new Date(this.rateLimitReset * 1000).toLocaleString()
           : 'unknown';
+        logger.warn('githubApi', 'API request failed: rate limit exceeded', { method, endpoint, status: response.status, durationMs });
         throw new Error(`GitHub API rate limit exceeded. Resets at ${resetDate}`);
       }
+      logger.warn('githubApi', 'API request failed', { method, endpoint, status: response.status, durationMs });
       throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+    }
+
+    if (logger.isDebugMode()) {
+      // Capture request headers (mask auth)
+      const requestHeaders: Record<string, string> = {
+        'Authorization': 'Bearer ***',
+        'Accept': 'application/vnd.github.v3+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(options.headers as Record<string, string> || {}),
+      };
+      // Capture response headers
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((v, k) => { responseHeaders[k] = v; });
+      // Capture response body preview (clone to avoid consuming)
+      let responseBody: string | undefined;
+      try {
+        const cloned = response.clone();
+        const text = await cloned.text();
+        if (text.length > 0) {
+          responseBody = text.length > 4000 ? text.slice(0, 4000) + '...[truncated]' : text;
+        }
+      } catch { /* body not readable */ }
+      logger.debug('githubApi', 'API request', {
+        method, endpoint, status: response.status, durationMs: Date.now() - startTime,
+        rateLimitRemaining: response.headers.get('x-ratelimit-remaining'),
+        requestHeaders, responseHeaders, responseBody,
+        ...(operationTag ? { operationTag } : {}),
+      });
     }
 
     const data = response.status === 204 ? null : await response.json();
@@ -191,7 +235,7 @@ export class GitHubApiService {
       }
       return response.content;
     } catch (error) {
-      console.warn(`Failed to fetch README for ${owner}/${repo}:`, error);
+      logger.warn('githubApi', `Failed to fetch README for ${owner}/${repo}`, error);
       return '';
     }
   }
@@ -199,7 +243,8 @@ export class GitHubApiService {
   async getRepositoryReleases(owner: string, repo: string, page = 1, perPage = 30): Promise<Release[]> {
     try {
       const releases = await this.makeRequest<Release[]>(
-        `/repos/${owner}/${repo}/releases?page=${page}&per_page=${perPage}`
+        `/repos/${owner}/${repo}/releases?page=${page}&per_page=${perPage}`,
+        { operationTag: 'release' }
       );
 
       return releases.map(release => ({
@@ -220,7 +265,7 @@ export class GitHubApiService {
         },
       }));
     } catch (error) {
-      console.warn(`Failed to fetch releases for ${owner}/${repo}:`, error);
+      logger.warn('githubApi', `Failed to fetch releases for ${owner}/${repo}`, error);
       throw error; // Re-throw to let caller handle
     }
   }
@@ -235,7 +280,8 @@ export class GitHubApiService {
 
     while (true) {
       const batch = await this.makeRequest<Release[]>(
-        `/repos/${owner}/${repo}/releases?page=${page}&per_page=30`
+        `/repos/${owner}/${repo}/releases?page=${page}&per_page=30`,
+        { operationTag: 'release' }
       );
 
       if (batch.length === 0) break;
@@ -274,6 +320,7 @@ export class GitHubApiService {
     repositories: Repository[],
     options: ReleaseFetchOptions = {}
   ): Promise<MultipleReleasesResult> {
+    const startTime = Date.now();
     const { includePreRelease = true } = options;
     const allReleases: Release[] = [];
     const failedRepos: { repoId: number; full_name: string; error: string }[] = [];
@@ -359,6 +406,8 @@ export class GitHubApiService {
       new Date(b.published_at).getTime() - new Date(a.published_at).getTime()
     );
 
+    logger.info('githubApi', 'Update releases completed', { repoCount: repositories.length, releaseCount: sortedReleases.length, durationMs: Date.now() - startTime });
+
     return { releases: sortedReleases, failedRepos };
   }
 
@@ -372,7 +421,7 @@ export class GitHubApiService {
     try {
       const endpoint = `/repos/${owner}/${repo}/releases?per_page=${perPage}`;
 
-      const releases = await this.makeRequest<Release[]>(endpoint);
+      const releases = await this.makeRequest<Release[]>(endpoint, { operationTag: 'release' });
 
       const mappedReleases = releases.map(release => ({
         id: release.id,
@@ -402,7 +451,7 @@ export class GitHubApiService {
 
       return mappedReleases;
     } catch (error) {
-      console.warn(`Failed to fetch incremental releases for ${owner}/${repo}:`, error);
+      logger.warn('githubApi', `Failed to fetch incremental releases for ${owner}/${repo}`, error);
       return [];
     }
   }
@@ -467,6 +516,7 @@ export class GitHubApiService {
   }
 
   async searchTrending(perPage = 10, timeRange: 'daily' | 'weekly' | 'monthly' = 'weekly'): Promise<SubscriptionRepo[]> {
+    const startTime = Date.now();
     // 使用 GitHubTrendingRSS API
     const rssUrl = `https://mshibanami.github.io/GitHubTrendingRSS/${timeRange}/all.xml`;
 
@@ -542,7 +592,7 @@ export class GitHubApiService {
               forks_count: number;
               language: string | null;
               description: string | null;
-            }>(`/repos/${owner}/${repo}`);
+            }>(`/repos/${owner}/${repo}`, { operationTag: 'trending' });
             r.stargazers_count = data.stargazers_count ?? r.stargazers_count;
             r.forks_count = data.forks_count ?? r.forks_count;
             r.language = data.language;
@@ -550,16 +600,18 @@ export class GitHubApiService {
               r.description = data.description;
             }
           } catch (e) {
-            console.warn(`Failed to fetch repo details for ${r.full_name}:`, e);
+            logger.warn('githubApi', `Failed to fetch repo details for ${r.full_name}`, e);
           }
           // 避免 GitHub API 限流
           await new Promise(resolve => setTimeout(resolve, 100));
         }));
       }
 
+      logger.info('githubApi', 'Refresh trending completed', { repoCount: repos.length, durationMs: Date.now() - startTime });
+
       return repos;
     } catch (error) {
-      console.error('Failed to fetch trending from RSS:', error);
+      logger.error('githubApi', 'Failed to fetch trending from RSS', error);
       return [];
     }
   }
@@ -664,6 +716,7 @@ export class GitHubApiService {
     perPage: number = 20,
     timeRange: TrendingTimeRange = 'weekly'
   ): Promise<PaginatedDiscoveryRepositories> {
+    const startTime = Date.now();
     const rssUrlMap: Record<TrendingTimeRange, string> = {
       daily: 'https://mshibanami.github.io/GitHubTrendingRSS/daily/all.xml',
       weekly: 'https://mshibanami.github.io/GitHubTrendingRSS/weekly/all.xml',
@@ -755,7 +808,7 @@ export class GitHubApiService {
               created_at: string;
               updated_at: string;
               pushed_at: string;
-            }>(`/repos/${owner}/${repo}`);
+            }>(`/repos/${owner}/${repo}`, { operationTag: 'trending' });
             r.id = data.id;
             r.stargazers_count = data.stargazers_count ?? r.stargazers_count;
             r.forks_count = data.forks_count ?? r.forks_count;
@@ -770,7 +823,7 @@ export class GitHubApiService {
               r.description = data.description;
             }
           } catch (e) {
-            console.warn(`Failed to fetch repo details for ${r.full_name}:`, e);
+            logger.warn('githubApi', `Failed to fetch repo details for ${r.full_name}`, e);
           }
           // Avoid GitHub API rate limiting
           await new Promise(resolve => setTimeout(resolve, 80));
@@ -780,6 +833,8 @@ export class GitHubApiService {
       // Assign rank based on position
       repos.forEach((r, idx) => { r.rank = startIndex + idx + 1; });
 
+      logger.info('githubApi', 'Refresh trending completed', { repoCount: repos.length, durationMs: Date.now() - startTime });
+
       return {
         repos,
         hasMore: endIndex < items.length,
@@ -787,7 +842,7 @@ export class GitHubApiService {
         totalCount: items.length,
       };
     } catch (error) {
-      console.error('Failed to fetch trending from RSS:', error);
+      logger.error('githubApi', 'Failed to fetch trending from RSS', error);
       return { repos: [], hasMore: false, nextPageIndex: 1, totalCount: 0 };
     }
   }
@@ -963,7 +1018,8 @@ async getUserForks(): Promise<ForkRepo[]> {
 
       while (true) {
         const forks = await this.makeRequest<ForkRepo[]>(
-          `/user/repos?type=forks&sort=updated&per_page=${perPage}&page=${page}`
+          `/user/repos?type=forks&sort=updated&per_page=${perPage}&page=${page}`,
+          { operationTag: 'fork' }
         );
         allForks = [...allForks, ...forks];
         if (forks.length < perPage) break;
@@ -974,7 +1030,7 @@ async getUserForks(): Promise<ForkRepo[]> {
 
       return allForks;
     } catch (error) {
-      console.warn('Failed to fetch user forks:', error);
+      logger.warn('githubApi', 'Failed to fetch user forks', error);
       throw error;
     }
   }
@@ -987,6 +1043,7 @@ async getUserForks(): Promise<ForkRepo[]> {
         {
           method: 'POST',
           body: JSON.stringify({ branch }),
+          operationTag: 'fork',
         }
       );
       return {
@@ -1017,7 +1074,7 @@ async getUserForks(): Promise<ForkRepo[]> {
       if (parentFullName) {
         parentOwner = parentFullName.split('/')[0];
       } else {
-        const repoData = await this.makeRequest<{ parent?: { owner: { login: string }, full_name: string, html_url: string } }>(`/repos/${owner}/${repo}`);
+        const repoData = await this.makeRequest<{ parent?: { owner: { login: string }, full_name: string, html_url: string } }>(`/repos/${owner}/${repo}`, { operationTag: 'fork' });
         if (!repoData.parent) return { needsSync: false };
         parentOwner = repoData.parent.owner.login;
         resultParentFullName = repoData.parent.full_name;
@@ -1025,7 +1082,8 @@ async getUserForks(): Promise<ForkRepo[]> {
       }
 
       const compareData = await this.makeRequest<{ behind_by: number }>(
-        `/repos/${owner}/${repo}/compare/${parentOwner}:${branch}...${owner}:${branch}`
+        `/repos/${owner}/${repo}/compare/${parentOwner}:${branch}...${owner}:${branch}`,
+        { operationTag: 'fork' }
       );
       
       return { 
@@ -1034,7 +1092,7 @@ async getUserForks(): Promise<ForkRepo[]> {
         parentHtmlUrl: resultParentHtmlUrl
       };
     } catch (error) {
-      console.warn(`Failed to check sync status for ${owner}/${repo}:`, error);
+      logger.warn('githubApi', `Failed to check sync status for ${owner}/${repo}`, error);
       return { needsSync: false };
     }
   }
@@ -1044,7 +1102,7 @@ async getUserForks(): Promise<ForkRepo[]> {
       const branches = await this.makeRequest<{ name: string }[]>(`/repos/${owner}/${repo}/branches?per_page=100`);
       return branches.map(b => b.name);
     } catch (error) {
-      console.warn(`Failed to fetch branches for ${owner}/${repo}:`, error);
+      logger.warn('githubApi', `Failed to fetch branches for ${owner}/${repo}`, error);
       return [];
     }
   }
@@ -1053,11 +1111,12 @@ async getUserForks(): Promise<ForkRepo[]> {
     try {
       // GET /repos/{owner}/{repo}/actions/workflows lists workflow files (definitions), not runs
       const data = await this.makeRequest<{ workflows: WorkflowDefinition[] }>(
-        `/repos/${owner}/${repo}/actions/workflows?per_page=100`
+        `/repos/${owner}/${repo}/actions/workflows?per_page=100`,
+        { operationTag: 'workflow' }
       );
       return data.workflows || [];
     } catch (error) {
-      console.warn(`Failed to fetch workflows for ${owner}/${repo}:`, error);
+      logger.warn('githubApi', `Failed to fetch workflows for ${owner}/${repo}`, error);
       return [];
     }
   }
@@ -1070,6 +1129,7 @@ async getUserForks(): Promise<ForkRepo[]> {
       {
         method: 'POST',
         body: JSON.stringify({ ref: branch }),
+        operationTag: 'workflow',
       }
     );
   }

@@ -1,4 +1,5 @@
 import { translateBackendError } from '../utils/backendErrors';
+import { logger } from './logger';
 
 import { Repository, Release, AIConfig, WebDAVConfig } from '../types';
 import { useAppStore } from '../store/useAppStore';
@@ -29,7 +30,7 @@ class BackendAdapter {
             const data = await res.json();
             if (data.status === 'ok') {
               this._backendUrl = baseUrl;
-              console.log(`✅ Backend connected: ${baseUrl}`);
+              logger.info('backendAdapter', 'Backend connected', { url: baseUrl });
               return;
             }
           }
@@ -41,10 +42,10 @@ class BackendAdapter {
       }
 
       this._backendUrl = null;
-      console.log('ℹ️ Backend not available, using local-only mode');
+      logger.info('backendAdapter', 'Backend not available, using local-only mode');
     } catch {
       this._backendUrl = null;
-      console.log('ℹ️ Backend not available, using local-only mode');
+      logger.info('backendAdapter', 'Backend not available, using local-only mode');
     }
   }
 
@@ -68,10 +69,85 @@ class BackendAdapter {
     return headers;
   }
   private async fetchWithTimeout(url: string, options?: RequestInit, timeoutMs = 30000): Promise<Response> {
+    const startTime = Date.now();
+    const method = (options?.method || 'GET').toUpperCase();
+    const path = url.replace(/^https?:\/\/[^/]+/, '');
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    // If the caller provides a signal, forward its abort to our internal controller
+    const callerSignal = options?.signal;
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        controller.abort();
+      } else {
+        callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
+      }
+    }
+
+    // Capture request details for debug logging
+    let requestHeaders: Record<string, string> | undefined;
+    let requestBody: string | undefined;
+    if (logger.isDebugMode()) {
+      if (options?.headers) {
+        if (options.headers instanceof Headers) {
+          requestHeaders = {};
+          options.headers.forEach((v, k) => { requestHeaders![k] = k.toLowerCase() === 'authorization' ? '***' : v; });
+        } else if (Array.isArray(options.headers)) {
+          requestHeaders = {};
+          for (const [k, v] of options.headers) {
+            requestHeaders[k] = k.toLowerCase() === 'authorization' ? '***' : v;
+          }
+        } else {
+          requestHeaders = {};
+          for (const [k, v] of Object.entries(options.headers as Record<string, string>)) {
+            requestHeaders[k] = k.toLowerCase() === 'authorization' ? '***' : v;
+          }
+        }
+      }
+      if (typeof options?.body === 'string') {
+        try {
+          const parsed = JSON.parse(options.body);
+          // Mask any apiKey/password fields recursively
+          requestBody = JSON.stringify(parsed, (key, val) => {
+            if (/api[_-]?key|password|secret|token|authorization/i.test(key)) return '***';
+            return val;
+          }, 2);
+        } catch {
+          requestBody = options.body.slice(0, 2000);
+        }
+      }
+    }
+
     try {
-      return await fetch(url, { ...options, signal: controller.signal });
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      if (logger.isDebugMode()) {
+        // Capture response headers
+        const responseHeaders: Record<string, string> = {};
+        response.headers.forEach((v, k) => { responseHeaders[k] = v; });
+        // Capture response body preview (clone to avoid consuming)
+        let responseBody: string | undefined;
+        try {
+          const cloned = response.clone();
+          const text = await cloned.text();
+          if (text.length > 0) {
+            responseBody = text.length > 4000 ? text.slice(0, 4000) + '...[truncated]' : text;
+          }
+        } catch { /* body not readable */ }
+        logger.debug('backendAdapter', 'Backend request', {
+          method, path, status: response.status, durationMs: Date.now() - startTime,
+          requestHeaders, requestBody, responseHeaders, responseBody,
+        });
+      }
+      return response;
+    } catch (err) {
+      if (logger.isDebugMode()) {
+        logger.debug('backendAdapter', 'Backend request', {
+          method, path, error: 'timeout/network error', durationMs: Date.now() - startTime,
+          requestHeaders, requestBody,
+        });
+      }
+      throw err;
     } finally {
       clearTimeout(timeoutId);
     }
@@ -82,6 +158,9 @@ class BackendAdapter {
    * Covers browser fetch (Chrome/Firefox/Safari) and Node.js undici fetch.
    */
   private async fetchWithRetry(url: string, options?: RequestInit, timeoutMs = 30000, maxRetries = 3): Promise<Response> {
+    const retryStartTime = Date.now();
+    const method = (options?.method || 'GET').toUpperCase();
+    const path = url.replace(/^https?:\/\/[^/]+/, '');
     let lastError: Error | undefined;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
@@ -104,7 +183,7 @@ class BackendAdapter {
         if (!isRetryable || attempt === maxRetries) throw lastError;
         // Exponential backoff: 1s, 2s, 4s
         const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
-        console.warn(`⚠️ Sync request failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms...`, lastError.message);
+        logger.warn('backendAdapter', 'Sync request failed, retrying', { attempt: attempt + 1, maxRetries: maxRetries + 1, delayMs: delay, durationMs: Date.now() - retryStartTime, method, path });
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -112,11 +191,23 @@ class BackendAdapter {
   }
   private async throwTranslatedError(res: Response, fallbackPrefix: string): Promise<never> {
     let code: string | undefined;
+    let detail = '';
     try {
       const data = await res.json();
       code = data.code;
+      // Extract nested error details (e.g., DeepSeek returns { error: { message, type, code } })
+      if (data.error) {
+        const err = data.error;
+        detail = typeof err === 'string' ? err : (err.message || JSON.stringify(err));
+      } else if (data.message) {
+        detail = data.message;
+      }
     } catch { /* body not JSON */ }
-    throw new Error(translateBackendError(code, `${fallbackPrefix}: ${res.status}`));
+    const translated = translateBackendError(code, `${fallbackPrefix}: ${res.status}`);
+    const error = new Error(detail ? `${translated} - ${detail}` : translated) as Error & { statusCode?: number; code?: string };
+    error.statusCode = res.status;
+    if (code) error.code = code;
+    throw error;
   }
 
   // === GitHub Proxy ===
@@ -206,16 +297,56 @@ class BackendAdapter {
 
   // === AI Proxy ===
 
-  async proxyAIRequest(configId: string, body: object): Promise<unknown> {
+  async proxyAIRequest(configId: string, body: object, signal?: AbortSignal): Promise<unknown> {
     if (!this._backendUrl) throw new Error('Backend not available');
 
     const res = await this.fetchWithTimeout(`${this._backendUrl}/proxy/ai`, {
       method: 'POST',
       headers: this.getAuthHeaders(),
-      body: JSON.stringify({ configId, body })
+      body: JSON.stringify({ configId, body }),
+      signal,
     }, 120000);
     if (!res.ok) await this.throwTranslatedError(res, 'AI proxy error');
     return res.json();
+  }
+
+  async proxyAIRequestWithConfig(aiConfig: { apiType?: string; baseUrl: string; apiKey: string; model: string; reasoningEffort?: string }, body: object, signal?: AbortSignal): Promise<unknown> {
+    if (!this._backendUrl) throw new Error('Backend not available');
+
+    const res = await this.fetchWithTimeout(`${this._backendUrl}/proxy/ai`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({ config: aiConfig, body }),
+      signal,
+    }, 120000);
+    if (!res.ok) await this.throwTranslatedError(res, 'AI proxy error');
+    return res.json();
+  }
+
+  async proxyAIRequestWithFallback(configId: string, aiConfig: { apiType?: string; baseUrl: string; apiKey: string; model: string; reasoningEffort?: string }, body: object, signal?: AbortSignal): Promise<unknown> {
+    if (!this._backendUrl) throw new Error('Backend not available');
+
+    // Try configId lookup first to avoid sending API key inline
+    if (configId) {
+      try {
+        const res = await this.fetchWithTimeout(`${this._backendUrl}/proxy/ai`, {
+          method: 'POST',
+          headers: this.getAuthHeaders(),
+          body: JSON.stringify({ configId, body }),
+          signal,
+        }, 120000);
+        if (res.ok) return res.json();
+        // Fall through to inline config on 404 (config not synced yet)
+        if (res.status !== 404) await this.throwTranslatedError(res, 'AI proxy error');
+      } catch (err) {
+        // Rethrow non-404 errors; fall through to inline config on config-not-found
+        const e = err as Error & { statusCode?: number; code?: string };
+        if (e.statusCode !== 404 && e.code !== 'AI_CONFIG_NOT_FOUND') throw err;
+      }
+    }
+
+    // Fallback: send full config inline
+    return this.proxyAIRequestWithConfig(aiConfig, body, signal);
   }
 
   // === WebDAV Proxy ===
@@ -264,6 +395,17 @@ class BackendAdapter {
     if (!res.ok) await this.throwTranslatedError(res, 'Sync releases error');
   }
 
+  async markAllReleasesAsRead(): Promise<{ updated: number }> {
+    if (!this._backendUrl) return { updated: 0 };
+
+    const res = await this.fetchWithRetry(`${this._backendUrl}/releases/mark-all-read`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) await this.throwTranslatedError(res, 'Mark all read error');
+    return res.json() as Promise<{ updated: number }>;
+  }
+
   async fetchReleases(): Promise<{ releases: Release[]; total: number }> {
     if (!this._backendUrl) throw new Error('Backend not available');
 
@@ -277,12 +419,31 @@ class BackendAdapter {
   async syncAIConfigs(configs: AIConfig[]): Promise<void> {
     if (!this._backendUrl) return;
 
-    const res = await this.fetchWithTimeout(`${this._backendUrl}/configs/ai/bulk`, {
+    // Pre-sync validation: warn about configs that will likely be skipped
+    for (const c of configs) {
+      if (!c.apiKey) {
+        logger.warn('backendAdapter', 'AI config has empty apiKey, will be skipped', { name: c.name, id: c.id });
+      }
+    }
+
+    const res = await this.fetchWithRetry(`${this._backendUrl}/configs/ai/bulk`, {
       method: 'PUT',
       headers: this.getAuthHeaders(),
       body: JSON.stringify({ configs })
-    });
+    }, 30000, 3);
     if (!res.ok) await this.throwTranslatedError(res, 'Sync AI configs error');
+
+    // Parse response and throw on partial failure so callers don't clear pending changes
+    try {
+      const data = await res.json() as { synced?: number; skipped?: number; errors?: Array<{ id: string; name: string; reason: string }> };
+      if (data.skipped && data.skipped > 0) {
+        const reasons = data.errors?.map(e => `${e.name}: ${e.reason}`).join('; ') ?? '';
+        throw new Error(`Sync AI configs partial failure: ${data.skipped} skipped${reasons ? ` (${reasons})` : ''}`);
+      }
+    } catch (err) {
+      // Re-throw our own errors; ignore JSON parse errors from empty responses
+      if (err instanceof Error && err.message.startsWith('Sync AI configs partial failure')) throw err;
+    }
   }
 
   async fetchAIConfigs(): Promise<AIConfig[]> {
@@ -298,12 +459,31 @@ class BackendAdapter {
   async syncWebDAVConfigs(configs: WebDAVConfig[]): Promise<void> {
     if (!this._backendUrl) return;
 
-    const res = await this.fetchWithTimeout(`${this._backendUrl}/configs/webdav/bulk`, {
+    // Pre-sync validation: warn about configs that will likely be skipped
+    for (const c of configs) {
+      if (!c.password) {
+        logger.warn('backendAdapter', 'WebDAV config has empty password, will be skipped', { name: c.name, id: c.id });
+      }
+    }
+
+    const res = await this.fetchWithRetry(`${this._backendUrl}/configs/webdav/bulk`, {
       method: 'PUT',
       headers: this.getAuthHeaders(),
       body: JSON.stringify({ configs })
-    });
+    }, 30000, 3);
     if (!res.ok) await this.throwTranslatedError(res, 'Sync WebDAV configs error');
+
+    // Parse response and throw on partial failure so callers don't clear pending changes
+    try {
+      const data = await res.json() as { synced?: number; skipped?: number; errors?: Array<{ id: string; name: string; reason: string }> };
+      if (data.skipped && data.skipped > 0) {
+        const reasons = data.errors?.map(e => `${e.name}: ${e.reason}`).join('; ') ?? '';
+        throw new Error(`Sync WebDAV configs partial failure: ${data.skipped} skipped${reasons ? ` (${reasons})` : ''}`);
+      }
+    } catch (err) {
+      // Re-throw our own errors; ignore JSON parse errors from empty responses
+      if (err instanceof Error && err.message.startsWith('Sync WebDAV configs partial failure')) throw err;
+    }
   }
 
   async fetchWebDAVConfigs(): Promise<WebDAVConfig[]> {

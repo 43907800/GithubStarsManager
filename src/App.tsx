@@ -7,42 +7,76 @@ import { CategorySidebar } from './components/CategorySidebar';
 import { ReleaseTimeline } from './components/ReleaseTimeline';
 import { ForkTimeline } from './components/ForkTimeline';
 import { SettingsPanel } from './components/SettingsPanel';
+import { DebugModeIndicator } from './components/DebugModeIndicator';
 import { DiscoveryView } from './components/DiscoveryView';
 import { BackToTop } from './components/BackToTop';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useAppStore } from './store/useAppStore';
 import { useAutoUpdateCheck } from './components/UpdateChecker';
+import { logger } from './services/logger';
 import { UpdateNotificationBanner } from './components/UpdateNotificationBanner';
 import { backend } from './services/backendAdapter';
 import { syncFromBackend, startAutoSync, stopAutoSync } from './services/autoSync';
-import type { AppState } from './types';
+import type { AppState, SearchFilters } from './types';
 
-const RepositoriesView = React.memo(({ 
-  repositories, 
-  searchResults, 
-  selectedCategory, 
-  onCategorySelect 
-}: { 
+/**
+ * Check if any search/filter/sort condition is active (non-default).
+ * Used to decide whether to display searchResults or the full repository list.
+ */
+function hasActiveSearchFilters(filters: SearchFilters): boolean {
+  return (
+    !!filters.query.trim() ||
+    filters.languages.length > 0 ||
+    filters.tags.length > 0 ||
+    filters.platforms.length > 0 ||
+    filters.minStars !== undefined ||
+    filters.maxStars !== undefined ||
+    filters.isAnalyzed !== undefined ||
+    filters.isSubscribed !== undefined ||
+    filters.isEdited !== undefined ||
+    filters.isCategoryLocked !== undefined ||
+    filters.analysisFailed !== undefined ||
+    filters.sortBy !== 'stars' ||
+    filters.sortOrder !== 'desc'
+  );
+}
+
+/**
+ * Main repository view combining category sidebar, search bar, and repository list.
+ * Switches between search results and full list based on active search filters.
+ */
+const RepositoriesView = React.memo(({
+  repositories,
+  searchResults,
+  searchFilters,
+  selectedCategory,
+  onCategorySelect
+}: {
   repositories: AppState['repositories'];
   searchResults: AppState['searchResults'];
+  searchFilters: AppState['searchFilters'];
   selectedCategory: string;
   onCategorySelect: (category: string) => void;
-}) => (
-  <div className="flex flex-col gap-4 lg:flex-row lg:gap-6">
-    <CategorySidebar 
-      repositories={repositories}
-      selectedCategory={selectedCategory}
-      onCategorySelect={onCategorySelect}
-    />
-    <div className="flex-1 space-y-6">
-      <SearchBar />
-      <RepositoryList 
-        repositories={searchResults.length > 0 ? searchResults : repositories}
+}) => {
+  const isActive = hasActiveSearchFilters(searchFilters);
+
+  return (
+    <div className="flex flex-col gap-4 lg:flex-row lg:gap-6">
+      <CategorySidebar
+        repositories={repositories}
         selectedCategory={selectedCategory}
+        onCategorySelect={onCategorySelect}
       />
+      <div className="flex-1 space-y-6">
+        <SearchBar />
+        <RepositoryList
+          repositories={isActive ? searchResults : repositories}
+          selectedCategory={selectedCategory}
+        />
+      </div>
     </div>
-  </div>
-));
+  );
+});
 RepositoriesView.displayName = 'RepositoriesView';
 
 const ReleasesView = React.memo(() => <ReleaseTimeline />);
@@ -62,11 +96,20 @@ function App() {
     theme,
     hasHydrated,
     searchResults,
+    searchFilters,
     repositories,
     setSelectedCategory,
   } = useAppStore();
 
   useAutoUpdateCheck();
+
+  // Restore persisted frontend debug level at startup so capture is active
+  // app-wide, not only after DiagnosticLogsPanel mounts.
+  useEffect(() => {
+    if (sessionStorage.getItem('gsm:frontend-debug') === 'true') {
+      logger.setLevel('debug');
+    }
+  }, []);
 
   useEffect(() => {
     if (theme === 'dark') {
@@ -115,6 +158,7 @@ function App() {
           <RepositoriesView
             repositories={repositories}
             searchResults={searchResults}
+            searchFilters={searchFilters}
             selectedCategory={selectedCategory}
             onCategorySelect={handleCategorySelect}
           />
@@ -134,7 +178,7 @@ function App() {
       default:
         return null;
     }
-  }, [currentView, repositories, searchResults, selectedCategory, handleCategorySelect]);
+  }, [currentView, repositories, searchResults, searchFilters, selectedCategory, handleCategorySelect]);
 
   // Show loading state while store is hydrating to ensure correct theme is applied
   if (!hasHydrated) {
@@ -159,6 +203,7 @@ function App() {
         {currentViewContent}
       </main>
       <BackToTop />
+      <DebugModeIndicator />
     </div>
   );
 }

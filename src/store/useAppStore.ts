@@ -5,16 +5,17 @@ import {
   Repository,
   Release,
   ForkRepo,
-  AIConfig, 
-  WebDAVConfig, 
-  SearchFilters, 
-  GitHubUser, 
-  Category, 
-  AssetFilter, 
-  UpdateNotification, 
-  AnalysisProgress, 
-  DiscoveryChannel, 
-  DiscoveryChannelId, 
+  AIConfig,
+  WebDAVConfig,
+  ProxyConfig,
+  SearchFilters,
+  GitHubUser,
+  Category,
+  AssetFilter,
+  UpdateNotification,
+  AnalysisProgress,
+  DiscoveryChannel,
+  DiscoveryChannelId,
   DiscoveryRepo,
   DiscoveryPlatform,
   ProgrammingLanguage,
@@ -26,6 +27,7 @@ import {
   defaultSubscriptionChannels
 } from '../types';
 import { indexedDBStorage } from '../services/indexedDbStorage';
+import { logger } from '../services/logger';
 import { PRESET_FILTERS } from '../constants/presetFilters';
 
 const BACKEND_SECRET_SESSION_KEY = 'github-stars-manager-backend-secret';
@@ -53,7 +55,7 @@ const debouncedPersistStorage: PersistStorage<any> = {
           const str = JSON.stringify(latestValue);
           indexedDBStorage.setItem(name, str);
         } catch (e) {
-          console.error('Failed to stringify state for persistence', e);
+          logger.errorFromError('store.persist', 'Failed to stringify state for persistence', e);
         }
       }, 1000);
     };
@@ -167,8 +169,12 @@ interface AppActions {
   // Backend actions
   setBackendApiSecret: (secret: string | null) => void;
 
+  // Proxy actions
+  setProxyConfig: (updates: Partial<ProxyConfig>) => void;
+
   // Release Timeline View actions
   setReleaseViewMode: (mode: 'timeline' | 'repository') => void;
+  setReleaseShowMode: (mode: 'all' | 'unread') => void;
   setReleaseSelectedFilters: (filters: string[]) => void;
   toggleReleaseSelectedFilter: (filterId: string) => void;
   clearReleaseSelectedFilters: () => void;
@@ -257,6 +263,7 @@ type PersistedAppState = Partial<
     | 'forkSearchQuery'
     | 'forkExpandedRepositories'
     | 'releaseViewMode'
+    | 'releaseShowMode'
     | 'releaseSelectedFilters'
     | 'releaseSearchQuery'
     | 'includePreRelease'
@@ -271,6 +278,7 @@ type PersistedAppState = Partial<
     | 'discoveryLanguage'
     | 'discoverySortBy'
     | 'discoverySortOrder'
+    | 'proxyConfig'
     | 'subscriptionRepos'
     | 'subscriptionLastRefresh'
     | 'subscriptionIsLoading'
@@ -375,6 +383,7 @@ const normalizePersistedState = (
     language: safePersisted.language || 'zh',
     isAuthenticated: !!(safePersisted.user && safePersisted.githubToken),
     releaseViewMode: safePersisted.releaseViewMode || 'timeline',
+    releaseShowMode: safePersisted.releaseShowMode === 'unread' ? 'unread' : 'all',
     releaseSelectedFilters: Array.isArray(safePersisted.releaseSelectedFilters) ? safePersisted.releaseSelectedFilters : [],
     releaseSearchQuery: typeof safePersisted.releaseSearchQuery === 'string' ? safePersisted.releaseSearchQuery : '',
     discoveryChannels: (() => {
@@ -522,6 +531,24 @@ const normalizePersistedState = (
       }).concat(
         defaultSubscriptionChannels.filter(dch => !persisted.some((ch: unknown) => (ch as Record<string, unknown>).id === dch.id))
       );
+    })(),
+    proxyConfig: (() => {
+      const p = (safePersisted as Record<string, unknown>).proxyConfig;
+      if (p && typeof p === 'object') {
+        const obj = p as Record<string, unknown>;
+        const validType = obj.type === 'http' || obj.type === 'socks5' ? obj.type : 'http';
+        const validHost = typeof obj.host === 'string' ? obj.host : '';
+        const validPort = typeof obj.port === 'number' && Number.isFinite(obj.port) ? obj.port : 7890;
+        return {
+          enabled: typeof obj.enabled === 'boolean' ? obj.enabled : false,
+          type: validType as import('../types').ProxyType,
+          host: validHost,
+          port: validPort,
+          username: typeof obj.username === 'string' ? obj.username : undefined,
+          // password 不从持久化恢复，仅在内存中
+        };
+      }
+      return { enabled: false, type: 'http' as const, host: '', port: 7890 };
     })(),
   };
 };
@@ -710,9 +737,11 @@ export const useAppStore = create<AppState & AppActions>()(
       updateNotification: null,
       analysisProgress: { current: 0, total: 0 },
       backendApiSecret: readSessionBackendSecret(),
+      proxyConfig: { enabled: false, type: 'http', host: '', port: 7890 },
       isSidebarCollapsed: false,
       readmeModalOpen: false,
       releaseViewMode: 'timeline',
+      releaseShowMode: 'all',
       releaseSelectedFilters: [],
       releaseSearchQuery: '',
       releaseExpandedRepositories: new Set<number>(),
@@ -754,11 +783,11 @@ export const useAppStore = create<AppState & AppActions>()(
 
       // Auth actions
       setUser: (user) => {
-        console.log('Setting user:', user);
+        logger.info('store.setUser', 'Setting user', { hasUser: !!user });
         set({ user, isAuthenticated: !!user });
       },
       setGitHubToken: (token) => {
-        console.log('Setting GitHub token:', !!token);
+        logger.info('store.setGitHubToken', 'Setting GitHub token', { hasToken: !!token });
         set({ githubToken: token });
       },
       logout: () => set({
@@ -1234,9 +1263,13 @@ export const useAppStore = create<AppState & AppActions>()(
         writeSessionBackendSecret(backendApiSecret);
         set({ backendApiSecret });
       },
+      setProxyConfig: (updates) => set((state) => ({
+        proxyConfig: { ...state.proxyConfig, ...updates }
+      })),
 
       // Release Timeline View actions
       setReleaseViewMode: (releaseViewMode) => set({ releaseViewMode }),
+      setReleaseShowMode: (releaseShowMode) => set({ releaseShowMode }),
       setReleaseSelectedFilters: (releaseSelectedFilters) => set({ releaseSelectedFilters }),
       toggleReleaseSelectedFilter: (filterId) => set((state) => ({
         releaseSelectedFilters: state.releaseSelectedFilters.includes(filterId)
@@ -1389,7 +1422,7 @@ export const useAppStore = create<AppState & AppActions>()(
     }),
     {
       name: 'github-stars-manager',
-      version: 5,
+      version: 6,
       storage: debouncedPersistStorage,
       partialize: (state) => ({
         // 持久化用户信息和认证状态
@@ -1446,6 +1479,7 @@ export const useAppStore = create<AppState & AppActions>()(
 
         // 持久化Release页面视图设置
         releaseViewMode: state.releaseViewMode,
+        releaseShowMode: state.releaseShowMode,
         releaseSelectedFilters: state.releaseSelectedFilters,
         releaseSearchQuery: state.releaseSearchQuery,
         releaseExpandedRepositories: Array.from(state.releaseExpandedRepositories),
@@ -1474,6 +1508,15 @@ export const useAppStore = create<AppState & AppActions>()(
       discoverySortBy: state.discoverySortBy,
       discoverySortOrder: state.discoverySortOrder,
       discoverySelectedTopic: state.discoverySelectedTopic,
+      // 持久化代理配置，但排除密码（安全考虑）
+      proxyConfig: {
+        enabled: state.proxyConfig.enabled,
+        type: state.proxyConfig.type,
+        host: state.proxyConfig.host,
+        port: state.proxyConfig.port,
+        username: state.proxyConfig.username,
+        // password 不持久化，仅保留在内存中
+      },
       }),
       migrate: (persistedState) => {
         // 版本升级适配处理
@@ -1595,6 +1638,11 @@ export const useAppStore = create<AppState & AppActions>()(
     };
   }
 
+  // v5→v6: 初始化 proxyConfig
+  if (state && !(state as Record<string, unknown>).proxyConfig) {
+    (state as Record<string, unknown>).proxyConfig = { enabled: false, type: 'http', host: '', port: 7890 };
+  }
+
         return state as PersistedAppState;
       },
       merge: (persistedState, currentState) => {
@@ -1603,7 +1651,7 @@ export const useAppStore = create<AppState & AppActions>()(
           currentState as AppState & AppActions
         );
 
-        console.log('Store rehydrated:', {
+        logger.info('store.hydrate', 'Store rehydrated', {
           isAuthenticated: normalized.isAuthenticated,
           repositoriesCount: normalized.repositories?.length || 0,
           lastSync: normalized.lastSync,
@@ -1617,13 +1665,17 @@ export const useAppStore = create<AppState & AppActions>()(
           ...normalized,
         };
       },
-      onRehydrateStorage: (state) => (_rehydratedState, error) => {
-        if (error) {
-          console.error('Store hydration failed', error);
-        } else {
-          console.log('Store hydration complete');
-        }
-        state.setHasHydrated(true);
+      onRehydrateStorage: (state) => {
+        const hydrationStart = Date.now();
+        return (_rehydratedState, error) => {
+          const elapsedMs = Date.now() - hydrationStart;
+          if (error) {
+            logger.errorFromError('store.hydrate', 'Store hydration failed', error, { elapsedMs });
+          } else {
+            logger.info('store.hydrate', 'Store hydration complete', { elapsedMs });
+          }
+          state.setHasHydrated(true);
+        };
       },
     }
   )

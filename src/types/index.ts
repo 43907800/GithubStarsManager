@@ -22,6 +22,7 @@ export interface Repository {
   ai_platforms?: string[];
   analyzed_at?: string;
   analysis_failed?: boolean;
+  analysis_error?: string;
   subscribed_to_releases?: boolean;
   custom_description?: string;
   custom_tags?: string[];
@@ -157,6 +158,17 @@ export interface WebDAVConfig {
   passwordStatus?: SecretStatus;
 }
 
+export type ProxyType = 'http' | 'socks5';
+
+export interface ProxyConfig {
+  enabled: boolean;
+  type: ProxyType;
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+}
+
 export interface SearchFilters {
   query: string;
   tags: string[];
@@ -247,6 +259,9 @@ export interface AppState {
   // Backend
   backendApiSecret: string | null;
 
+  // Network Proxy
+  proxyConfig: ProxyConfig;
+
   // Fork Timeline View
   forks: ForkRepo[];
   readForks: Set<number>;
@@ -260,6 +275,7 @@ export interface AppState {
 
   // Release Timeline View
   releaseViewMode: 'timeline' | 'repository';
+  releaseShowMode: 'all' | 'unread';
   releaseSelectedFilters: string[];
   releaseSearchQuery: string;
   releaseExpandedRepositories: Set<number>;

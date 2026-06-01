@@ -116,12 +116,19 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     [filteredRepositories]
   );
   
-  // 当筛选的仓库变化时，如果没有AI分析的仓库，自动切换到原始描述
+  // 当切换分类时，如果目标分类没有AI分析的仓库，自动切换到原始描述
+  // 注意：不要在搜索/过滤过程中触发，否则会误关用户的显示偏好
+  const prevHasAnalyzedRef = useRef(hasAnalyzedRepos);
+  const prevCategoryRefForAI = useRef(selectedCategory);
   useEffect(() => {
-    if (!hasAnalyzedRepos && showAISummary) {
+    const categoryChanged = prevCategoryRefForAI.current !== selectedCategory;
+    prevCategoryRefForAI.current = selectedCategory;
+    prevHasAnalyzedRef.current = hasAnalyzedRepos;
+
+    if (categoryChanged && !hasAnalyzedRepos && showAISummary) {
       setShowAISummary(false);
     }
-  }, [hasAnalyzedRepos]);
+  }, [hasAnalyzedRepos, selectedCategory]);
 
   // Infinite scroll (瀑布流按需加载)
   const LOAD_BATCH = 50;
@@ -370,6 +377,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
             category_locked: wasCategoryLocked,
             analyzed_at: new Date().toISOString(),
             analysis_failed: false,
+            analysis_error: undefined,
           });
           successCount++;
         } else {
@@ -377,6 +385,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
             ...result.repo,
             analyzed_at: new Date().toISOString(),
             analysis_failed: true,
+            analysis_error: result.error?.message || undefined,
           });
           failedCount++;
         }
@@ -520,6 +529,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
             updatedRepo.ai_summary = undefined;
             updatedRepo.analyzed_at = undefined;
             updatedRepo.analysis_failed = undefined;
+            updatedRepo.analysis_error = undefined;
           }
         }
 
@@ -530,6 +540,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
             updatedRepo.ai_platforms = undefined;
             updatedRepo.analyzed_at = undefined;
             updatedRepo.analysis_failed = undefined;
+            updatedRepo.analysis_error = undefined;
           }
         }
 
@@ -541,6 +552,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
             updatedRepo.ai_platforms = undefined;
             updatedRepo.analyzed_at = undefined;
             updatedRepo.analysis_failed = undefined;
+            updatedRepo.analysis_error = undefined;
           }
         }
 
@@ -717,6 +729,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
                   category_locked: shouldKeepLocked || wasCategoryLocked,
                   analyzed_at: new Date().toISOString(),
                   analysis_failed: false,
+                  analysis_error: undefined,
                 });
                 successCount++;
               } else {
@@ -724,6 +737,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
                   ...result.repo,
                   analyzed_at: new Date().toISOString(),
                   analysis_failed: true,
+                  analysis_error: result.error?.message || undefined,
                 });
                 failedCount++;
               }
