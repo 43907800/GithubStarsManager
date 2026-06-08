@@ -57,7 +57,7 @@ const cancelIdleTask = (id: number): void => {
 let persistTimeoutId: ReturnType<typeof setTimeout> | null = null;
 let persistIdleTaskId: number | null = null;
 let latestPersistName: string | null = null;
-let latestPersistValue: StorageValue<any> | null = null;
+let latestPersistValue: StorageValue<unknown> | null = null;
 let persistWriteVersion = 0;
 let persistFlushListenersRegistered = false;
 
@@ -75,7 +75,7 @@ const cancelPendingPersistTasks = (): void => {
 
 const writePersistSnapshot = (
   name: string,
-  value: StorageValue<any>,
+  value: StorageValue<unknown>,
   version: number,
   source: 'idle' | 'flush'
 ): void => {
@@ -144,7 +144,7 @@ const registerPersistFlushListeners = (): void => {
 
 // Create a debounced storage to avoid frequent JSON.stringify calls on large state objects
 // which causes V8 JIT assertion failures (EXC_BREAKPOINT) on macOS ARM64.
-const debouncedPersistStorage: PersistStorage<any> = {
+const debouncedPersistStorage: PersistStorage<unknown> = {
   getItem: async (name) => {
     const str = await indexedDBStorage.getItem(name);
     if (!str) return null;
@@ -154,7 +154,7 @@ const debouncedPersistStorage: PersistStorage<any> = {
       return null;
     }
   },
-  setItem: (name: string, value: StorageValue<any>) => {
+  setItem: (name: string, value: StorageValue<unknown>) => {
     registerPersistFlushListeners();
     latestPersistName = name;
     latestPersistValue = value;
@@ -337,6 +337,9 @@ interface AppActions {
   setReleaseIsRefreshing: (refreshing: boolean) => void;
   setIncludePreRelease: (include: boolean) => void;
 
+  // Backup/Export key inclusion preference
+  setIncludeKeysInBackup: (include: boolean) => void;
+
   // Fork Timeline View actions
   setForkViewMode: (mode: 'timeline' | 'repository') => void;
   setForkSelectedFilters: (filters: string[]) => void;
@@ -420,6 +423,7 @@ type PersistedAppState = Partial<
     | 'releaseSelectedFilters'
     | 'releaseSearchQuery'
     | 'includePreRelease'
+    | 'includeKeysInBackup'
     | 'discoveryChannels'
     | 'discoveryRepos'
     | 'discoveryLastRefresh'
@@ -915,6 +919,7 @@ export const useAppStore = create<AppState & AppActions>()(
       releaseExpandedRepositories: new Set<number>(),
       releaseIsRefreshing: false,
       includePreRelease: true,
+      includeKeysInBackup: false,
 
       forks: [],
       readForks: new Set<number>(),
@@ -1474,6 +1479,7 @@ export const useAppStore = create<AppState & AppActions>()(
       setReleaseExpandedRepositories: (releaseExpandedRepositories) => set({ releaseExpandedRepositories }),
       setReleaseIsRefreshing: (releaseIsRefreshing) => set({ releaseIsRefreshing }),
       setIncludePreRelease: (includePreRelease) => set({ includePreRelease }),
+      setIncludeKeysInBackup: (includeKeysInBackup) => set({ includeKeysInBackup }),
 
       // Fork actions
       setForks: (forks) => set({ forks }),
@@ -1606,7 +1612,7 @@ export const useAppStore = create<AppState & AppActions>()(
     }),
     {
       name: 'github-stars-manager',
-      version: 6,
+      version: 7,
       storage: debouncedPersistStorage,
       partialize: (state) => ({
         // 持久化用户信息和认证状态
@@ -1668,6 +1674,7 @@ export const useAppStore = create<AppState & AppActions>()(
         releaseSearchQuery: state.releaseSearchQuery,
         releaseExpandedRepositories: Array.from(state.releaseExpandedRepositories),
         includePreRelease: state.includePreRelease,
+        includeKeysInBackup: state.includeKeysInBackup,
 
         // 持久化Fork页面视图设置
         forkViewMode: state.forkViewMode,
@@ -1808,6 +1815,11 @@ export const useAppStore = create<AppState & AppActions>()(
   }
   if (state && !state.discoveryPlatform) {
     state.discoveryPlatform = 'All';
+  }
+  // 版本 6→7：新增 includeKeysInBackup（默认 false，安全优先）
+  if (state && typeof state.includeKeysInBackup !== 'boolean') {
+    console.log('Migrating: initializing includeKeysInBackup to false (security first)');
+    state.includeKeysInBackup = false;
   }
   if (state && !state.discoveryLanguage) {
     state.discoveryLanguage = 'All';

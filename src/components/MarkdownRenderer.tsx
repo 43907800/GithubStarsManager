@@ -69,6 +69,9 @@ const CodeBlock: React.FC<{
     return String(children).replace(/\n$/, '');
   }, [children]);
 
+  const codeLines = useMemo(() => codeText.split('\n'), [codeText]);
+  const showLineNumbers = codeLines.length > 3;
+
   useEffect(() => {
     if (codeRef.current) {
       try {
@@ -179,11 +182,22 @@ const CodeBlock: React.FC<{
               ? 'bg-gradient-to-br from-cyan-50/40 to-slate-100/20 dark:from-[#0d1117] dark:to-[#161b22]'
               : 'bg-light-bg dark:bg-[#0d1117]'
       }`}>
-        <pre className={`p-4 overflow-x-auto ${className || ''}`}>
-          <code ref={codeRef} className={`text-sm font-mono leading-6 text-gray-800 dark:text-[#e6edf3] ${normalizedLanguage ? `language-${normalizedLanguage}` : ''}`}>
-            {codeText}
-          </code>
-        </pre>
+        <div className={`p-4 overflow-x-auto ${className || ''}`}>
+          <pre className={showLineNumbers ? 'flex items-start' : undefined}>
+            {showLineNumbers && (
+              <span className="select-none pr-4 text-right flex-shrink-0" aria-hidden="true">
+                {codeLines.map((_, index) => (
+                  <span key={index} className="block text-gray-400 text-sm font-mono leading-6">
+                    {index + 1}
+                  </span>
+                ))}
+              </span>
+            )}
+            <code ref={codeRef} className={`text-sm font-mono leading-6 text-gray-800 dark:text-[#e6edf3] ${showLineNumbers ? 'block min-w-0 flex-1' : ''} ${normalizedLanguage ? `language-${normalizedLanguage}` : ''}`}>
+              {codeText}
+            </code>
+          </pre>
+        </div>
       </div>
     </div>
   );
@@ -860,7 +874,9 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({
       <del className="line-through text-gray-500 dark:text-text-tertiary">{children}</del>
     ),
     code: ({ className, children, ...props }) => {
-      const isInline = !className;
+      // 检查 props 中是否有 'data-code-block' 标记（由 pre 组件添加）
+      const isCodeBlock = 'data-code-block' in props || !!className;
+      const isInline = !isCodeBlock;
       const match = /language-(\w+)/.exec(className || '');
       const language = match ? match[1] : '';
 
@@ -874,7 +890,14 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({
         </CodeBlock>
       );
     },
-    pre: ({ children }) => <>{children}</>,
+    pre: ({ children }) => {
+      // 给 code 子元素添加标记，表明它是代码块而不是行内代码
+      if (React.isValidElement(children) && children.type === 'code') {
+        return <>{React.cloneElement(children as React.ReactElement<React.ComponentPropsWithoutRef<'code'>>, { 'data-code-block': true })}</>;
+      }
+      // 对于非 code 子元素（如 ASCII 字符画），保留 pre 标签
+      return <pre>{children}</pre>;
+    },
     blockquote: ({ children }) => (
       <blockquote className="border-l-4 border-black/[0.06] dark:border-white/[0.04] pl-4 py-1 my-2 text-gray-700 dark:text-text-tertiary italic bg-light-bg dark:bg-panel-dark/50 rounded-r">
         {children}
