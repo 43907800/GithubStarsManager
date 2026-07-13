@@ -73,6 +73,8 @@ export class AIService {
   private config: AIConfig;
   private language: string;
   private static readonly ANALYSIS_MAX_ATTEMPTS = 3;
+  private static readonly ANALYSIS_MAX_TOKENS = 4096;
+  private static readonly RERANKING_MAX_TOKENS = 4096;
 
   constructor(config: AIConfig, language: string = 'zh') {
     this.config = config;
@@ -514,7 +516,7 @@ ${options.user}` : options.user;
             ? prompt
             : this.createAnalysisRetryPrompt(prompt, lastContent, lastInvalidReason),
           temperature: attempt === 1 ? 0.3 : 0.1,
-          maxTokens: 1000,
+          maxTokens: AIService.ANALYSIS_MAX_TOKENS,
           signal,
         });
 
@@ -600,6 +602,73 @@ ${this.sanitizeForPrompt(contentPreview).slice(0, 6000)}
     });
   }
 
+  /**
+   * 分析单个 release 的更新日志，输出通俗易懂、按重要程度排序的 Markdown 总结。
+   * 用于 Release 列表项的「总结」按钮。直接返回 Markdown 文本，调用方负责渲染。
+   * @param releaseBody release 的正文（Markdown 更新说明）
+   * @param meta release 的元信息
+   * @param signal 可选 AbortSignal
+   */
+  async analyzeReleaseSummary(
+    releaseBody: string,
+    meta: { repoName: string; tagName: string; releaseName?: string },
+    signal?: AbortSignal
+  ): Promise<string> {
+    const body = this.sanitizeForPrompt(releaseBody || '').slice(0, 12000);
+    if (!body.trim()) {
+      throw new Error(this.language === 'zh' ? 'Release 内容为空，无法分析。' : 'Release body is empty, cannot analyze.');
+    }
+
+    const system = this.language === 'zh'
+      ? '你是一个专业的 GitHub Release 更新日志分析助手。请用简体中文，以通俗易懂的语言总结本次更新。直接输出 Markdown，不要输出任何额外解释、代码块标记或“以下是总结”之类的开场白。排版需易读，使用列表形式，并按重要程度从高到低排序。'
+      : 'You are a professional GitHub Release changelog analysis assistant. Summarize this update in plain, easy-to-understand English. Output Markdown directly, without any extra explanation, code fences, or opening remarks such as "Here is the summary". Use a readable layout with lists, ordered from most to least important.';
+
+    const repoName = this.sanitizeForPrompt(meta.repoName);
+    const tagName = this.sanitizeForPrompt(meta.tagName);
+    const releaseName = meta.releaseName ? this.sanitizeForPrompt(meta.releaseName) : '';
+
+    const user = this.language === 'zh'
+      ? `
+以下是 GitHub 仓库 "${repoName}" 的 Release（标签：${tagName}${releaseName ? `，名称：${releaseName}` : ''}）的更新说明。
+
+请完成以下要求：
+1. 用通俗易懂的语言，面向普通用户总结本次更新的要点。
+2. 尽量区分「新功能 / 特性」与「Bug 修复」两类内容（无对应内容时可省略该分类）。
+3. 使用列表形式（可用子列表），按重要程度从高到低排序，最重要的写在最前面。
+4. 只输出 Markdown 内容，不要加额外说明。
+
+更新说明原文：
+${body}
+      `.trim()
+      : `
+Below is the changelog of a GitHub Release for "${repoName}" (tag: ${tagName}${releaseName ? `, name: ${releaseName}` : ''}).
+
+Requirements:
+1. Summarize the update in plain language for general users.
+2. Separate "New Features" from "Bug Fixes" where applicable (omit a section if empty).
+3. Use lists (nested lists are fine), ordered from most to least important.
+4. Output only Markdown content, no extra commentary.
+
+Changelog:
+${body}
+      `.trim();
+
+    const response = await this.requestText({
+      system,
+      user,
+      temperature: 0.3,
+      maxTokens: 4096,
+      signal,
+    });
+
+    // 防御性处理：部分模型仍会用 ```markdown 或 ``` 包裹返回内容，
+    // 剥离首尾代码块标记，避免 MarkdownRenderer 将其渲染成代码块。
+    return response
+      .replace(/^```(?:markdown)?[ \t]*\n?/i, '')
+      .replace(/\n?[ \t]*```\s*$/i, '')
+      .trim();
+  }
+
   async searchGistsWithReranking(gists: Gist[], query: string): Promise<Gist[]> {
     if (gists.length === 0) return [];
 
@@ -620,7 +689,7 @@ AI Summary: ${gist.ai_summary || 'None'}`;
       system,
       user: `Query: ${query}\n\nGists:\n${this.sanitizeForPrompt(gistSummaries)}`,
       temperature: 0.1,
-      maxTokens: 1200,
+      maxTokens: AIService.RERANKING_MAX_TOKENS,
     });
 
     try {
@@ -682,7 +751,7 @@ AI Summary: ${gist.ai_summary || 'None'}`;
       system,
       user: `Query: ${query}\n\nRepositories:\n${this.sanitizeForPrompt(repoSummaries)}`,
       temperature: 0.1,
-      maxTokens: 800,
+      maxTokens: AIService.RERANKING_MAX_TOKENS,
       signal,
     });
 
