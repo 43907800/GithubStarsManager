@@ -1,6 +1,7 @@
 import { backend } from './backendAdapter';
 import { useAppStore } from '../store/useAppStore';
 import { mergeRepositoriesPreservingLocalMetadata } from '../utils/repositoryMerge';
+import { GitHubApiService } from './githubApi';
 import { logger } from './logger';
 
 // Prevent sync loops: when we pull data FROM backend and update store,
@@ -42,9 +43,118 @@ function quickHash(data: unknown): string {
   return JSON.stringify(data);
 }
 
+/** Canonical fingerprint for the vector search config.
+ *
+ * The backend GET payload and the store config have different key sets/order
+ * (backend adds authTokenStatus/status/lastSyncAt, the store always carries
+ * embeddingFormatVersion). A naive quickHash over each raw side therefore never
+ * matches, which kept the poll→push loop running forever. Fingerprinting only the
+ * shared, meaningful fields makes both sides converge after one round-trip.
+ */
+export function vectorSearchFingerprint(config: unknown): string {
+  const c = (config ?? {}) as Record<string, unknown>;
+  return quickHash({
+    enabled: !!c.enabled,
+    workerUrl: c.workerUrl ?? '',
+    authToken: c.authToken ?? '',
+    embeddingConfigId: c.embeddingConfigId ?? '',
+    indexMode: c.indexMode ?? 'readme',
+    readmeMaxChars: c.readmeMaxChars ?? 6000,
+    searchThreshold: c.searchThreshold ?? 0.35,
+    searchTopK: c.searchTopK ?? 30,
+    enableHyDE: c.enableHyDE ?? true,
+    enableReranking: c.enableReranking ?? true,
+    embeddingFormatVersion: c.embeddingFormatVersion ?? null,
+  });
+}
+
+/**
+ * Decide whether a fresh/empty backend must NOT overwrite a locally configured
+ * vector search. Mirrors the repositories bootstrap guard: on the first-ever sync
+ * in this session, an empty backend (nothing stored) must not wipe a working local
+ * config — otherwise the local worker/embedding setup is lost and the follow-up
+ * push then persists the wiped (empty) config to the backend. When true, the
+ * caller keeps the local config and pushes it up instead.
+ */
+export function shouldPreserveLocalVectorSearch(
+  backendConfig: unknown,
+  localConfig: unknown,
+  isFirstSync: boolean
+): boolean {
+  if (!isFirstSync) return false;
+  const b = (backendConfig ?? {}) as Record<string, unknown>;
+  const l = (localConfig ?? {}) as Record<string, unknown>;
+  const backendEmpty = !b.enabled && !b.workerUrl && !b.embeddingConfigId;
+  const localConfigured = !!(l.enabled || l.workerUrl || l.embeddingConfigId);
+  return backendEmpty && localConfigured;
+}
+
+/**
+ * True when the backend's stored vector-search authToken is unusable (empty or
+ * failed to decrypt) but the local client has a working token to preserve. The
+ * caller must then queue a repair push: during a pull the store subscription is
+ * suppressed, so without it the preserved token would never reach the backend,
+ * the stored fingerprint (with the local token) would never match the backend's
+ * empty token, and the poll→push loop would run forever.
+ */
+export function shouldQueueVectorSearchRepairPush(backendConfig: unknown, localConfig: unknown): boolean {
+  const b = (backendConfig ?? {}) as Record<string, unknown>;
+  const l = (localConfig ?? {}) as Record<string, unknown>;
+  const backendTokenUnusable = b.authTokenStatus === 'decrypt_failed' || !b.authToken;
+  return backendTokenUnusable && !!l.authToken;
+}
+
 function setRepositorySyncVisualState(isSyncing: boolean): void {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent('gsm:repository-sync-visual-state', { detail: { isSyncing } }));
+}
+
+let _isRestoringAuth = false;
+
+/**
+ * Cross-browser/device session recovery (Issue #259).
+ *
+ * Only runs on a genuine bootstrap: no local session AND the client already
+ * holds the backend API_SECRET (so it can authenticate). It NEVER overwrites an
+ * existing local session — existing users' credentials and data are untouched.
+ *
+ * Bootstrap guard: the caller must have configured backendApiSecret once in
+ * this browser (BackendPanel). With that, the backend hands back the GitHub
+ * token it stores, and we re-validate it against the GitHub API before logging in.
+ */
+export async function tryRestoreAuthFromBackend(): Promise<boolean> {
+  if (!backend.isAvailable || _isRestoringAuth) return false;
+
+  const state = useAppStore.getState();
+
+  // Never clobber an existing session (single-account safety guard).
+  if (state.user && state.githubToken) return false;
+
+  // Without an authenticated backend we have nothing to restore from.
+  if (!state.backendApiSecret) return false;
+
+  _isRestoringAuth = true;
+  try {
+    const restored = await backend.restoreAuth();
+    if (!restored?.github_token) return false;
+
+    // Re-check right before applying: the user may have logged in meanwhile.
+    const latest = useAppStore.getState();
+    if (latest.user || latest.githubToken) return false;
+
+    const githubApi = new GitHubApiService(restored.github_token);
+    const user = await githubApi.getCurrentUser();
+
+    useAppStore.getState().setGitHubToken(restored.github_token);
+    useAppStore.getState().setUser(user);
+    logger.info('sync.restoreAuth', 'Restored session from backend', { login: user.login });
+    return true;
+  } catch (err) {
+    logger.warn('sync.restoreAuth', 'Failed to restore session from backend', { error: err instanceof Error ? err.message : String(err) });
+    return false;
+  } finally {
+    _isRestoringAuth = false;
+  }
 }
 
 /**
@@ -122,9 +232,8 @@ export async function syncFromBackend(): Promise<void> {
     }
 
     if (vectorSearchResult.status === 'fulfilled') {
-      const hash = quickHash(vectorSearchResult.value);
+      const hash = vectorSearchFingerprint(vectorSearchResult.value);
       if (hash !== _lastHash.vectorSearch) {
-        hashes.vectorSearch = hash;
         changed.vectorSearch = true;
       }
     }
@@ -228,16 +337,27 @@ export async function syncFromBackend(): Promise<void> {
     }
     if (changed.vectorSearch && vectorSearchResult.status === 'fulfilled') {
       const backendConfig = vectorSearchResult.value;
-      // Preserve local authToken if backend returned empty or decrypt_failed
       const localConfig = state.vectorSearchConfig;
-      if ((backendConfig as Record<string, unknown>).authTokenStatus === 'decrypt_failed' || !backendConfig.authToken) {
-        if (localConfig.authToken) {
+      // Bootstrap guard (mirrors repositories): a fresh/empty backend must not
+      // wipe a locally-configured vector search — keep local and push it up.
+      if (shouldPreserveLocalVectorSearch(backendConfig, localConfig, _lastHash.vectorSearch === '')) {
+        _hasPendingPush = true;
+      } else {
+        // Preserve local authToken if backend returned empty or decrypt_failed,
+        // and queue a repair push so the backend is re-synced with it. Without
+        // the push the preserved token stays local-only and the poll loop keeps
+        // re-detecting the backend/effective fingerprint mismatch.
+        if (shouldQueueVectorSearchRepairPush(backendConfig, localConfig)) {
           logger.warn('sync.decryptFailed', 'Backend decrypt_failed for vector search authToken, preserving local value');
           backendConfig.authToken = localConfig.authToken;
+          _hasPendingPush = true;
         }
+        state.setVectorSearchConfig(backendConfig);
+        // Fingerprint the effective store config (after merge/normalization) so it
+        // matches the push fingerprint in syncToBackend(); hashing the raw backend
+        // payload instead would leave the two sides forever unequal.
+        _lastHash.vectorSearch = vectorSearchFingerprint(useAppStore.getState().vectorSearchConfig);
       }
-      state.setVectorSearchConfig(backendConfig);
-      _lastHash.vectorSearch = hashes.vectorSearch;
     }
     // Sync active selections from settings
     if (changed.settings && settingsResult.status === 'fulfilled') {
@@ -355,7 +475,7 @@ export async function syncToBackend(): Promise<void> {
     if (aiSync.status === 'fulfilled') _lastHash.ai = quickHash(state.aiConfigs);
     if (webdavSync.status === 'fulfilled') _lastHash.webdav = quickHash(state.webdavConfigs);
     if (embeddingSync.status === 'fulfilled') _lastHash.embedding = quickHash(state.embeddingConfigs);
-    if (vectorSearchSync.status === 'fulfilled') _lastHash.vectorSearch = quickHash(state.vectorSearchConfig);
+    if (vectorSearchSync.status === 'fulfilled') _lastHash.vectorSearch = vectorSearchFingerprint(state.vectorSearchConfig);
     if (settingsSync.status === 'fulfilled') {
       _lastHash.settings = quickHash({
         activeAIConfig: state.activeAIConfig,
