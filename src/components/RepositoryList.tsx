@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Bot, ChevronDown, Pause, Play } from 'lucide-react';
+import { Bot, ChevronDown, LayoutGrid, List, Pause, Play } from 'lucide-react';
 import { RepositoryCard } from './RepositoryCard';
 import { SimilarViewBanner } from './SimilarViewBanner';
 import { BulkActionToolbar } from './BulkActionToolbar';
@@ -44,7 +44,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     batchUnsubscribeReleases,
     releaseSubscriptions,
     similarView,
-    resetSimilarView
+    resetSimilarView,
+    repositoryViewMode,
+    setRepositoryViewMode
   } = useAppStore();
 
   const { toast, confirm } = useDialog();
@@ -1017,7 +1019,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   const { unanalyzedCount, analyzedCount, failedCount } = repositoryStats;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
 
       {/* Similar repositories view banner */}
       {similarView?.active && (
@@ -1029,7 +1031,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
       )}
 
       {/* Controls Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between bg-white dark:bg-panel-dark rounded-xl border border-black/[0.06] dark:border-white/[0.04] p-3 sm:p-4 gap-3 sm:gap-0">
+      <div className="ui-toolbar flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 sm:p-4 gap-3 sm:gap-0">
         <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
 
           {/* AI Analysis Dropdown Button */}
@@ -1037,7 +1039,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
             <button
               onClick={() => setShowDropdown(!showDropdown)}
               disabled={isLoading}
-              className="flex items-center space-x-1 sm:space-x-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-100 dark:bg-white/[0.04] text-gray-700 dark:text-text-secondary dark:bg-brand-indigo/20 dark:text-brand-violet rounded-lg hover:bg-gray-100 dark:bg-white/[0.04] dark:hover:bg-brand-indigo/30 transition-colors disabled:opacity-50 text-sm font-medium"
+              className="linear-filter-toggle flex items-center space-x-1 sm:space-x-2 px-3 sm:px-4 py-1.5 sm:py-2 disabled:opacity-50 text-sm font-medium"
             >
               <Bot className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span className="whitespace-nowrap">
@@ -1160,11 +1162,12 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
               </div>
             </div>
           )}
+
         </div>
 
-        {/* Statistics */}
-        <div className={disableCardAnimations ? 'repository-list-syncing' : undefined}>
-          <div className="text-xs text-gray-500 dark:text-text-tertiary mt-0.5">
+        {/* Statistics and view mode: the layout switch remains at the toolbar's far right. */}
+        <div className={`ml-auto flex w-full flex-col items-end gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3 ${disableCardAnimations ? 'repository-list-syncing' : ''}`}>
+          <div className="text-xs text-gray-500 dark:text-text-tertiary mt-0.5 sm:text-right">
             <div className="flex items-center justify-between">
               <div>
                 {t(
@@ -1196,12 +1199,39 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
               </div>
             </div>
           </div>
+
+          {!isLoading && (
+            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-black/[0.06] bg-light-surface p-0.5 dark:border-white/[0.04] dark:bg-white/[0.04]" role="group" aria-label={t('仓库布局', 'Repository layout')}>
+              <button
+                type="button"
+                onClick={() => setRepositoryViewMode('grid')}
+                aria-pressed={repositoryViewMode === 'grid'}
+                aria-label={t('多列卡片', 'Grid view')}
+                className={`flex h-7 w-8 items-center justify-center rounded-md transition-colors ${repositoryViewMode === 'grid' ? 'bg-white text-brand-violet shadow-sm dark:bg-white/[0.08]' : 'text-gray-500 hover:text-gray-900 dark:text-text-tertiary dark:hover:text-text-primary'}`}
+                title={t('多列卡片', 'Grid view')}
+              >
+                <LayoutGrid className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setRepositoryViewMode('list')}
+                aria-pressed={repositoryViewMode === 'list'}
+                aria-label={t('单列列表', 'List view')}
+                className={`flex h-7 w-8 items-center justify-center rounded-md transition-colors ${repositoryViewMode === 'list' ? 'bg-white text-brand-violet shadow-sm dark:bg-white/[0.08]' : 'text-gray-500 hover:text-gray-900 dark:text-text-tertiary dark:hover:text-text-primary'}`}
+                title={t('单列列表', 'List view')}
+              >
+                <List className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Repository Grid with consistent card widths */}
       <div
-        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 min-h-[200px]"
+        className={repositoryViewMode === 'list'
+          ? 'space-y-2 min-h-[200px]'
+          : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 min-h-[200px]'}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
       >
@@ -1216,6 +1246,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
             selectionMode={showBulkToolbar}
             isExitingSelection={isExitingSelection}
             allCategories={allCategories}
+            viewMode={repositoryViewMode}
           />
         ))}
       </div>
