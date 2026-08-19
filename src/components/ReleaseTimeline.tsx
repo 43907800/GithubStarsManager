@@ -22,7 +22,11 @@ import {
   releaseBelongsToResolvedSources,
   resolveReleaseSources,
 } from '../utils/releaseSources';
-import { assetsFingerprint, effectiveReleaseTime } from '../utils/releaseAssets';
+import {
+  effectiveReleaseTime,
+  findReleasesWithChangedAssets,
+  shouldShowAssetsUpdatedIndicator,
+} from '../utils/releaseAssets';
 
 export const ReleaseTimeline: React.FC = () => {
   const {
@@ -450,13 +454,10 @@ export const ReleaseTimeline: React.FC = () => {
 
       // 只比每仓最新 1 条资产指纹：对已存在的最新 Release，若资产发生变化则按 id 合并更新，
       // 内容变化后由 upsertReleases 自动重置为未读（is_read=false 并从 readReleases 移除）。
-      const currentReleases = useAppStore.getState().releases;
-      const updatedReleases = (latestReleases || []).filter(latest => {
-        const local = currentReleases.find(r => r.id === latest.id);
-        // 本地不存在（即为新增，已在上方 addReleases 处理）或资产未变化时跳过
-        if (!local) return false;
-        return assetsFingerprint(local.assets) !== assetsFingerprint(latest.assets);
-      });
+      const updatedReleases = findReleasesWithChangedAssets(
+        latestReleases,
+        useAppStore.getState().releases
+      );
       const updatedCount = updatedReleases.length;
 
       if (updatedReleases.length > 0) {
@@ -1235,7 +1236,8 @@ export const ReleaseTimeline: React.FC = () => {
             const isExpanded = expandedRepositories.has(repository.id);
             const hasUnread = releases.some(({ release }) => isReleaseUnread(release.id));
             const latestEffectiveTime = latestRelease ? effectiveReleaseTime(latestRelease) : null;
-            const latestAssetsUpdated = latestEffectiveTime !== null && latestEffectiveTime > latestRelease.published_at;
+            const latestAssetsUpdated = latestRelease !== null
+              && shouldShowAssetsUpdatedIndicator(latestRelease, isReleaseUnread(latestRelease.id));
 
             return (
               <div key={repository.id} className="ui-card overflow-hidden">
@@ -1270,7 +1272,7 @@ export const ReleaseTimeline: React.FC = () => {
                           <p className="text-xs text-gray-400 dark:text-text-tertiary truncate">
                             {t('最新:', 'Latest:')} {latestRelease.tag_name}
                           </p>
-                          <p className="text-xs text-gray-400 dark:text-text-quaternary whitespace-nowrap flex items-center gap-1">
+                          <p className="text-xs text-gray-400 dark:text-text-quaternary whitespace-nowrap flex items-center justify-end gap-1">
                             {formatDistanceToNow(new Date(latestEffectiveTime!), { addSuffix: true, locale: language === 'zh' ? zhCN : undefined })}
                             {latestAssetsUpdated && (
                               <span className="text-[10px] px-1 py-px rounded bg-brand-violet/10 text-brand-violet font-medium">
