@@ -14,6 +14,7 @@ import { BackToTop } from './components/BackToTop';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SyncModeChoiceModal } from './components/SyncModeChoiceModal';
 import { useAppStore } from './store/useAppStore';
+import { applyThemePreset } from './lib/themePresets';
 import { useAutoUpdateCheck } from './hooks/useAutoUpdateCheck';
 import { logger } from './services/logger';
 import { UpdateNotificationBanner } from './components/UpdateNotificationBanner';
@@ -125,6 +126,7 @@ function App() {
     currentView,
     selectedCategory,
     theme,
+    themePreset,
     hasHydrated,
     searchResults,
     searchFilters,
@@ -155,6 +157,11 @@ function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [theme]);
+
+  // Theme preset (palette/radius/font/shadow skin) rides on data-theme.
+  useEffect(() => {
+    applyThemePreset(themePreset);
+  }, [themePreset]);
 
   useEffect(() => {
     if (!hasHydrated) return;
@@ -250,8 +257,8 @@ function App() {
   // Show loading state while store is hydrating to ensure correct theme is applied
   if (!hasHydrated) {
     return (
-      <div className="min-h-screen bg-light-bg dark:bg-marketing-black flex items-center justify-center">
-        <div className="text-gray-900 dark:text-text-primary text-lg font-medium animate-pulse">
+      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
+        <div className="animate-pulse text-lg font-medium text-foreground">
           Loading...
         </div>
       </div>
@@ -263,7 +270,7 @@ function App() {
   }
 
   return (
-    <div className="ui-shell min-h-screen text-gray-900 dark:text-text-primary transition-colors duration-200">
+    <div className="ui-shell min-h-screen transition-colors duration-200">
       <UpdateNotificationBanner />
       <Header />
       <main className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7">

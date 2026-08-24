@@ -1,3 +1,5 @@
+import type { ThemePresetId } from '../constants/themePresets';
+
 export interface Repository {
   id: number;
   name: string;
@@ -289,6 +291,9 @@ export interface SimilarViewState {
 export type AIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 export type MiMoPlan = 'api' | 'token-plan';
 
+/** README 文档翻译使用的引擎：微软 Edge 翻译（免费）、Google 翻译（免费）或用户配置的 AI。 */
+export type TranslationEngine = 'microsoft' | 'google' | 'ai';
+
 export type SecretStatus = 'ok' | 'empty' | 'decrypt_failed';
 
 export interface AIConfig {
@@ -458,9 +463,13 @@ export interface AppState {
   
   // UI
   theme: 'light' | 'dark';
+  /** 主题配色预设（默认 + 内置精选），见 constants/themePresets */
+  themePreset: ThemePresetId;
   currentView: 'repositories' | 'gists' | 'releases' | 'forks' | 'settings' | 'subscription';
   selectedCategory: string;
   language: 'zh' | 'en';
+  /** README 文档翻译引擎（微软 / Google / AI），见 TranslationEngine */
+  translationEngine: TranslationEngine;
   isSidebarCollapsed: boolean;
   readmeModalOpen: boolean;
   headerMenuConfig: HeaderMenuItem[];

@@ -42,7 +42,10 @@ import {
   HeaderMenuItem,
   defaultHeaderMenuConfig,
   SyncMode,
+  TranslationEngine,
 } from '../types';
+import { DEFAULT_THEME_PRESET_ID, isThemePresetId } from '../constants/themePresets';
+import type { ThemePresetId } from '../constants/themePresets';
 import { indexedDBStorage } from '../services/indexedDbStorage';
 import { EMBEDDING_FORMAT_VERSION } from '../services/vectorSearchService';
 import { MCP_DEFAULT_HOST, MCP_DEFAULT_PORT, normalizeMcpHost } from '../utils/mcpHost';
@@ -447,9 +450,11 @@ interface AppActions {
   
   // UI actions
   setTheme: (theme: 'light' | 'dark') => void;
+  setThemePreset: (preset: ThemePresetId) => void;
   setCurrentView: (view: 'repositories' | 'gists' | 'releases' | 'forks' | 'settings' | 'subscription') => void;
   setSelectedCategory: (category: string) => void;
   setLanguage: (language: 'zh' | 'en') => void;
+  setTranslationEngine: (engine: TranslationEngine) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setReadmeModalOpen: (open: boolean) => void;
   setHeaderMenuConfig: (config: HeaderMenuItem[]) => void;
@@ -580,9 +585,11 @@ type PersistedAppState = Partial<
     | 'categoryMatchMode'
     | 'assetFilters'
     | 'theme'
+    | 'themePreset'
     | 'currentView'
     | 'selectedCategory'
     | 'language'
+    | 'translationEngine'
     | 'searchFilters'
     | 'isSidebarCollapsed'
     | 'repositoryViewMode'
@@ -855,6 +862,9 @@ export const normalizePersistedState = (
       safePersisted.theme === 'light' || safePersisted.theme === 'dark'
         ? safePersisted.theme
         : 'dark',
+    themePreset: isThemePresetId(safePersisted.themePreset)
+      ? safePersisted.themePreset
+      : DEFAULT_THEME_PRESET_ID,
     repositories: migratedRepositories,
     gists,
     starredGists,
@@ -933,6 +943,9 @@ export const normalizePersistedState = (
     categoryMatchMode: safePersisted.categoryMatchMode === 'legacy' ? 'legacy' : 'effective',
     assetFilters: Array.isArray(safePersisted.assetFilters) && safePersisted.assetFilters.length > 0 ? safePersisted.assetFilters : defaultPresetFilters,
     language: safePersisted.language || 'zh',
+    translationEngine: safePersisted.translationEngine === 'google' || safePersisted.translationEngine === 'ai'
+      ? safePersisted.translationEngine
+      : 'microsoft',
     isAuthenticated: !!(resolvedUser && resolvedGithubToken),
     releaseViewMode: safePersisted.releaseViewMode || 'timeline',
     releaseShowMode: safePersisted.releaseShowMode === 'unread' ? 'unread' : 'all',
@@ -1337,10 +1350,12 @@ export const useAppStore = create<AppState & AppActions>()(
       categoryMatchMode: 'effective',
       assetFilters: defaultPresetFilters,
       theme: 'dark',
+      themePreset: DEFAULT_THEME_PRESET_ID,
       hasHydrated: false,
       currentView: 'repositories',
       selectedCategory: 'all',
       language: 'zh',
+      translationEngine: 'microsoft',
       updateNotification: null,
       analysisProgress: { current: 0, total: 0 },
       backendApiSecret: readSessionBackendSecret(),
@@ -2399,9 +2414,11 @@ export const useAppStore = create<AppState & AppActions>()(
 
       // UI actions
       setTheme: (theme) => set({ theme }),
+      setThemePreset: (themePreset) => set({ themePreset }),
       setCurrentView: (currentView) => set({ currentView }),
       setSelectedCategory: (selectedCategory) => set({ selectedCategory }),
       setLanguage: (language) => set({ language }),
+      setTranslationEngine: (translationEngine) => set({ translationEngine }),
       setSidebarCollapsed: (isSidebarCollapsed) => set({ isSidebarCollapsed }),
       setReadmeModalOpen: (readmeModalOpen) => set({ readmeModalOpen }),
       setHeaderMenuConfig: (config) => set({
@@ -2650,9 +2667,11 @@ export const useAppStore = create<AppState & AppActions>()(
 
         // 持久化UI设置
         theme: state.theme,
+        themePreset: state.themePreset,
         currentView: state.currentView,
         selectedCategory: state.selectedCategory,
         language: state.language,
+        translationEngine: state.translationEngine,
         isSidebarCollapsed: state.isSidebarCollapsed,
         headerMenuConfig: state.headerMenuConfig,
 
