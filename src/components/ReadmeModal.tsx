@@ -8,6 +8,7 @@ import { Repository } from '../types';
 import { GitHubApiService } from '../services/githubApi';
 import { backend } from '../services/backendAdapter';
 import { useAppStore } from '../store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
 import { buildReadmeVariants, DEFAULT_README_VARIANT, type GitHubReadmeCandidateItem, type ReadmeVariant } from '../utils/readmeVariants';
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 
@@ -20,6 +21,7 @@ interface TocItem {
 interface ReadmeModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onCloseAutoFocus?: () => void;
   repository: Repository | null;
 }
 
@@ -43,9 +45,14 @@ const isAbortError = (error: unknown, signal?: AbortSignal): boolean => {
 export const ReadmeModal: React.FC<ReadmeModalProps> = ({
   isOpen,
   onClose,
+  onCloseAutoFocus,
   repository
 }) => {
-  const { githubToken, language, setReadmeModalOpen } = useAppStore();
+  const { githubToken, language, setReadmeModalOpen } = useAppStore(useShallow((state) => ({
+    githubToken: state.githubToken,
+    language: state.language,
+    setReadmeModalOpen: state.setReadmeModalOpen,
+  })));
   const [readmeContent, setReadmeContent] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -592,12 +599,17 @@ export const ReadmeModal: React.FC<ReadmeModalProps> = ({
         showClose={false}
         aria-describedby={undefined}
         className="w-[calc(100%_-_2rem)] max-w-[1130px] min-w-0 overflow-hidden p-0"
+        onCloseAutoFocus={(event) => {
+          if (!onCloseAutoFocus) return;
+          event.preventDefault();
+          onCloseAutoFocus();
+        }}
       >
         <div className="relative flex max-h-[90vh] min-w-0 max-w-full w-full flex-col overflow-hidden bg-card dark:bg-card">
           {readmeContent && !loading && (
             <div className="absolute top-0 left-0 right-0 h-0.5 bg-accent dark:bg-muted z-20 rounded-t-xl overflow-hidden">
               <div
-                className="h-full bg-blue-500 dark:bg-blue-400 transition-[width] duration-150 ease-out"
+                className="h-full bg-primary transition-[width] duration-150 ease-out"
                 style={{ width: `${scrollProgress}%` }}
               />
             </div>
@@ -687,7 +699,7 @@ export const ReadmeModal: React.FC<ReadmeModalProps> = ({
                     className={`flex items-center space-x-1 px-3 py-2 text-sm rounded-lg transition-colors ${
                       isTranslating
                         ? 'text-muted-foreground dark:text-muted-foreground/70 cursor-not-allowed'
-                        : 'text-muted-foreground dark:text-foreground hover:text-foreground dark:hover:text-white hover:bg-muted dark:hover:bg-accent'
+                        : 'text-muted-foreground dark:text-foreground hover:text-foreground hover:bg-muted dark:hover:bg-accent'
                     }`}
                     title={t('翻译文档', 'Translate Document')}
                   >
@@ -748,7 +760,7 @@ export const ReadmeModal: React.FC<ReadmeModalProps> = ({
                 href={repository.html_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center space-x-1 px-3 py-2 text-sm text-muted-foreground dark:text-foreground hover:text-foreground dark:hover:text-white hover:bg-muted dark:hover:bg-accent rounded-lg transition-colors"
+                className="flex items-center space-x-1 px-3 py-2 text-sm text-muted-foreground dark:text-foreground hover:text-foreground hover:bg-muted dark:hover:bg-accent rounded-lg transition-colors"
                 title={t('在 GitHub 上查看', 'View on GitHub')}
               >
                 <ExternalLink className="w-4 h-4" />
@@ -798,7 +810,7 @@ export const ReadmeModal: React.FC<ReadmeModalProps> = ({
                 </div>
                 <div
                   onMouseDown={handleResizeMouseDown}
-                  className="w-1.5 cursor-col-resize bg-transparent hover:bg-blue-400 dark:hover:bg-blue-500 transition-colors flex-shrink-0 relative group"
+                  className="w-1.5 cursor-col-resize bg-transparent hover:bg-ring dark:hover:bg-ring transition-colors flex-shrink-0 relative group"
                 >
                   <div className="absolute inset-y-0 -left-1 -right-1" />
                 </div>
@@ -858,7 +870,7 @@ export const ReadmeModal: React.FC<ReadmeModalProps> = ({
               <Button
                 onClick={scrollToTop}
                 aria-label={t('回到顶部', 'Back to top')}
-                className="absolute bottom-4 right-4 h-8 w-8 p-0 bg-card dark:bg-muted rounded-full shadow-lg border border-border dark:border-border text-muted-foreground dark:text-muted-foreground hover:bg-accent dark:hover:bg-accent hover:text-foreground dark:hover:text-white transition-all z-10"
+                className="absolute bottom-4 right-4 h-8 w-8 p-0 bg-card dark:bg-muted rounded-full shadow-lg border border-border dark:border-border text-muted-foreground dark:text-muted-foreground hover:bg-accent dark:hover:bg-accent hover:text-foreground transition-all z-10"
                 title={t('回到顶部', 'Back to top')}
               >
                 <ArrowUp className="w-4 h-4" />

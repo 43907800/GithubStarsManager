@@ -17,6 +17,7 @@ import {
   Star,
 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 import { isElectron } from '../services/electronProxy';
@@ -206,7 +207,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   onClose,
   isModal = false 
 }) => {
-  const { language, setCurrentView } = useAppStore();
+  const { language, setCurrentView } = useAppStore(useShallow((state) => ({
+    language: state.language,
+    setCurrentView: state.setCurrentView,
+  })));
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [displayTab, setDisplayTab] = useState<SettingsTab>('general');
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -275,7 +279,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     const stored = sessionStorage.getItem('gsm:pending-settings-tab');
     if (stored && VALID_TABS.has(stored)) {
       sessionStorage.removeItem('gsm:pending-settings-tab');
-      handleTabChange(stored as SettingsTab);
+      // Apply a pre-mount navigation synchronously. In React Strict Mode an
+      // animation timer can be cleaned up during the development remount.
+      setActiveTab(stored as SettingsTab);
+      setDisplayTab(stored as SettingsTab);
     } else if (stored) {
       sessionStorage.removeItem('gsm:pending-settings-tab');
     }

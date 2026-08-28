@@ -4,6 +4,7 @@ import { RotateCcw, Bot, FileText, Tag, FolderOpen, AlertTriangle, Info } from '
 import { Modal } from './Modal';
 import { Repository } from '../types';
 import { useAppStore, getAllCategories } from '../store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
 import { Checkbox } from './ui/checkbox';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { getAICategory } from '../utils/categoryUtils';
@@ -36,7 +37,12 @@ export const BulkRestoreModal: React.FC<BulkRestoreModalProps> = ({
   repositories,
   onRestore
 }) => {
-  const { customCategories, hiddenDefaultCategoryIds, defaultCategoryOverrides, language } = useAppStore();
+  const { customCategories, hiddenDefaultCategoryIds, defaultCategoryOverrides, language } = useAppStore(useShallow((state) => ({
+    customCategories: state.customCategories,
+    hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
+    defaultCategoryOverrides: state.defaultCategoryOverrides,
+    language: state.language,
+  })));
   const [config, setConfig] = useState<RestoreConfig>({
     description: { enabled: true, target: 'original' },
     tags: { enabled: true, target: 'original' },
@@ -151,7 +157,7 @@ export const BulkRestoreModal: React.FC<BulkRestoreModalProps> = ({
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center space-x-2">
               <Checkbox aria-labelledby="bulk-restore-description-heading" checked={config.description.enabled} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, description: { ...prev.description, enabled: checked === true } }))} />
-              <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <FileText className="w-4 h-4 text-primary" />
                 <span id="bulk-restore-description-heading" className="text-sm font-medium text-foreground dark:text-foreground">
                   {t('描述', 'Description')}
                 </span>
@@ -187,7 +193,7 @@ export const BulkRestoreModal: React.FC<BulkRestoreModalProps> = ({
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center space-x-2">
               <Checkbox aria-labelledby="bulk-restore-tags-heading" checked={config.tags.enabled} onCheckedChange={(checked) => setConfig(prev => ({ ...prev, tags: { ...prev.tags, enabled: checked === true } }))} />
-              <Tag className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+              <Tag className="w-4 h-4 text-primary" />
                 <span id="bulk-restore-tags-heading" className="text-sm font-medium text-foreground dark:text-foreground">
                   {t('标签', 'Tags')}
                 </span>

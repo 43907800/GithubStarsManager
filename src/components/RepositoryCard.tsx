@@ -1,23 +1,76 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import React, { Suspense, useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { GripVertical, Star, StarOff, ExternalLink, Calendar, Bell, BellOff, Bot, Sparkles, Monitor, Smartphone, Globe, Terminal, Package, Edit3, BookOpen, Apple, Square, CheckSquare, Loader2, HelpCircle, Search, Scale, MoreHorizontal } from 'lucide-react';
+import { GripVertical, Star, StarOff, ExternalLink, Calendar, Bell, BellOff, Bot, Sparkles, Monitor, Smartphone, Globe, Terminal, Package, Edit3, BookOpen, Apple, Square, CheckSquare, Loader2, HelpCircle, Search, Scale, MoreHorizontal, PackageOpen, MessageSquareText } from 'lucide-react';
 import { Repository, Category } from '../types';
 import { useAppStore } from '../store/useAppStore';
-import { EmbeddingClient, VectorSearchService, findSimilarRepositories } from '../services/vectorSearchService';
 import { getAICategory, getDefaultCategory } from '../utils/categoryUtils';
-import { analyzeRepository, createFailedAnalysisResult } from '../services/aiAnalysisHelper';
-import { forceSyncToBackend } from '../services/autoSync';
-import { GitHubApiService } from '../services/githubApi';
 import { formatDistanceToNow } from 'date-fns';
 import { RepositoryEditModal } from './RepositoryEditModal';
-import { ReadmeModal } from './ReadmeModal';
+import { ErrorBoundary } from './ErrorBoundary';
+import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { NO_LICENSE_SENTINEL, normalizeLicense } from '../utils/licenseFilter';
-import { shallow } from 'zustand/shallow';
-import { useDialog } from '../hooks/useDialog';
-import { logger } from '../services/logger';
+import { useRepositoryCardActions } from '../features/repositories/hooks/useRepositoryCardActions';
 import { Button } from './ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from './ui/dropdown-menu';
+
+type DialogContentPointerDownOutsideHandler = NonNullable<
+  React.ComponentProps<typeof DialogContent>['onPointerDownOutside']
+>;
+
+const LazyReadmeModal = React.lazy(() =>
+  import('./ReadmeModal').then((module) => ({ default: module.ReadmeModal }))
+);
+
+const LazyRepositoryReleaseSheet = React.lazy(() =>
+  import('./RepositoryReleaseSheet').then((module) => ({ default: module.RepositoryReleaseSheet }))
+);
+
+const ReadmeModalLoadingFallback: React.FC<{
+  onClose: () => void;
+  onCloseAutoFocus: () => void;
+}> = ({ onClose, onCloseAutoFocus }) => (
+  <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <DialogContent
+      aria-describedby={undefined}
+      className="w-[calc(100%_-_2rem)] max-w-[1130px] p-6"
+      onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        onCloseAutoFocus();
+      }}
+    >
+      <DialogTitle className="sr-only">Loading README</DialogTitle>
+      <div className="flex min-h-40 flex-col items-center justify-center gap-4" role="status" aria-live="polite">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" aria-hidden="true" />
+        <p className="text-muted-foreground">Loading README...</p>
+      </div>
+    </DialogContent>
+  </Dialog>
+);
+
+const ReleaseSheetLoadingFallback: React.FC<{
+  onClose: () => void;
+  onCloseAutoFocus: () => void;
+  onPointerDownOutside: DialogContentPointerDownOutsideHandler;
+}> = ({ onClose, onCloseAutoFocus, onPointerDownOutside }) => (
+  <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <DialogContent
+      aria-describedby={undefined}
+      className="w-[calc(100%_-_2rem)] max-w-sm p-6"
+      onPointerDownOutside={onPointerDownOutside}
+      onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        onCloseAutoFocus();
+      }}
+    >
+      <DialogTitle className="sr-only">Loading releases</DialogTitle>
+      <div className="flex min-h-40 flex-col items-center justify-center gap-4" role="status" aria-live="polite">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" aria-hidden="true" />
+        <p className="text-muted-foreground">Loading releases...</p>
+      </div>
+    </DialogContent>
+  </Dialog>
+);
 
 // Selection-aware button component to centralize selectionMode disable logic
 interface SelectionAwareButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -42,8 +95,8 @@ const SelectionAwareButton: React.FC<SelectionAwareButtonProps> = ({
     default: '',
     ai: '', // AI variant uses dynamic classes based on state
     subscribe: '', // Subscribe variant uses dynamic classes based on state
-    edit: 'bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-muted/40 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-foreground',
-    unstar: 'bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-muted/40 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-foreground disabled:cursor-not-allowed',
+    edit: 'bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground',
+    unstar: 'bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed',
   };
 
   const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -75,6 +128,7 @@ interface RepositoryCardProps {
   isExitingSelection?: boolean;
   allCategories: Category[];
   viewMode?: 'grid' | 'list';
+  onAskRepository?: (repository: Repository) => void;
 }
 
 const MAX_CACHE_SIZE = 500;
@@ -94,102 +148,66 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
   selectionMode = false,
   isExitingSelection = false,
   allCategories,
-  viewMode = 'grid'
+  viewMode = 'grid',
+  onAskRepository,
 }) => {
-  const repoId = repository.id;
-
-  const isSubscribed = useAppStore(
-    useCallback((state) => state.releaseSubscriptions.has(repoId), [repoId])
-  );
-  const isStoreAnalyzing = useAppStore(
-    useCallback((state) => state.analyzingRepositoryIds.has(repoId), [repoId])
-  );
-
+  const language = useAppStore((state) => state.language);
   const {
+    analyze: handleAIAnalyze,
+    findSimilar: handleFindSimilar,
+    unstar: handleUnstar,
     toggleReleaseSubscription,
-    githubToken,
-    activeAIConfig,
-    setAnalyzingRepository,
-    language,
-    updateRepository,
-    deleteRepository,
-    vectorSearchConfig,
-    vectorSearchStatus,
-    embeddingConfigs,
-    activeEmbeddingConfig,
-    repositories,
-    enterSimilarView
-  } = useAppStore(
-    useCallback(
-      (state) => ({
-        toggleReleaseSubscription: state.toggleReleaseSubscription,
-        githubToken: state.githubToken,
-        activeAIConfig: state.activeAIConfig,
-        setAnalyzingRepository: state.setAnalyzingRepository,
-        language: state.language,
-        updateRepository: state.updateRepository,
-        deleteRepository: state.deleteRepository,
-        vectorSearchConfig: state.vectorSearchConfig,
-        vectorSearchStatus: state.vectorSearchStatus,
-        embeddingConfigs: state.embeddingConfigs,
-        activeEmbeddingConfig: state.activeEmbeddingConfig,
-        repositories: state.repositories,
-        enterSimilarView: state.enterSimilarView
-      }),
-      []
-    ),
-    shallow
-  );
-
-  const abortControllerRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    return () => {
-      abortControllerRef.current?.abort();
-      setAnalyzingRepository(repoId, false);
-    };
-  }, [repoId, setAnalyzingRepository]);
-
-  const aiConfigs = useAppStore(state => state.aiConfigs);
-
-  const { toast, confirm } = useDialog();
+    isSubscribed,
+    isAnalyzing,
+    isFindingSimilar,
+    isUnstarring: unstarring,
+    vectorSearchAvailable,
+  } = useRepositoryCardActions({ repository, allCategories });
 
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [readmeModalOpen, setReadmeModalOpen] = useState(false);
-  const [unstarring, setUnstarring] = useState(false);
+  const [releaseSheetOpen, setReleaseSheetOpen] = useState(false);
   const [showDragHint, setShowDragHint] = useState(false);
   const dragHintTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [isLocallyAnalyzing, setIsLocallyAnalyzing] = useState(false);
-  const isAnalyzing = isLocallyAnalyzing || isStoreAnalyzing;
-
-  // 向量搜索是否可用（开关开启 + Worker 已连接 + 有索引 + Embedding 配置完整）
-  // 仅在可用时显示"查找相似仓库"按钮，避免无效点击
-  const vectorSearchAvailable = useMemo(() => {
-    const activeConfig = embeddingConfigs.find((c) => c.id === activeEmbeddingConfig);
-    const configComplete = !!activeConfig
-      && !!activeConfig.baseUrl
-      && !!activeConfig.model
-      && (activeConfig.apiType === 'ollama' || !!activeConfig.apiKey);
-    return (
-      vectorSearchConfig.enabled
-      && !!vectorSearchStatus?.connected
-      && (vectorSearchStatus?.vectorCount ?? 0) > 0
-      && configComplete
-      && !!vectorSearchConfig.workerUrl
-      && !!vectorSearchConfig.authToken
-    );
-  }, [embeddingConfigs, activeEmbeddingConfig, vectorSearchConfig, vectorSearchStatus]);
-
-  const [isFindingSimilar, setIsFindingSimilar] = useState(false);
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const menuDismissedByPointerDownRef = useRef(false);
+  const releaseSheetOutsideDismissedAtRef = useRef<number | null>(null);
+  const editModalOutsideDismissedAtRef = useRef<number | null>(null);
+  const gridActionRowRef = useRef<HTMLDivElement>(null);
+  const [visibleGridActionCount, setVisibleGridActionCount] = useState(8);
+
+  const restoreReadmeTriggerFocus = useCallback(() => {
+    cardRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     if (viewMode !== 'list' || selectionMode) {
       setIsActionsMenuOpen(false);
     }
   }, [viewMode, selectionMode]);
+
+  useEffect(() => {
+    if (viewMode !== 'grid') return;
+
+    const updateVisibleActionCount = () => {
+      const width = gridActionRowRef.current?.clientWidth ?? 0;
+      // A zero width occurs during hidden/JSDOM rendering; retain all actions
+      // until a real layout measurement is available.
+      if (width === 0) return;
+      const capacity = Math.max(1, Math.floor((width + 6) / 38));
+      setVisibleGridActionCount(capacity >= 8 ? 8 : Math.max(0, capacity - 1));
+    };
+
+    updateVisibleActionCount();
+    const observer = new ResizeObserver(updateVisibleActionCount);
+    if (gridActionRowRef.current) observer.observe(gridActionRowRef.current);
+    window.addEventListener('resize', updateVisibleActionCount);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateVisibleActionCount);
+    };
+  }, [viewMode]);
 
   // 高亮搜索关键词的工具函数 - 使用缓存优化
   const highlightSearchTerm = useCallback((text: string, searchTerm: string): React.ReactNode => {
@@ -208,7 +226,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         return (
           <mark
             key={index}
-            className="bg-primary/15 text-foreground px-1 rounded"
+            className="search-result-highlight px-1"
           >
             {part}
           </mark>
@@ -305,204 +323,9 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
     return platformNameMap[platformLower as keyof typeof platformNameMap] || platform;
   }, [platformNameMap]);
 
-  const handleAIAnalyze = async () => {
-    if (!githubToken) {
-      toast(t('GitHub token 未找到，请重新登录。', 'GitHub token not found. Please login again.'), 'error');
-      return;
-    }
-
-    const activeConfig = aiConfigs.find(config => config.id === activeAIConfig);
-    if (!activeConfig) {
-      toast(t('请先在设置中配置AI服务。', 'Please configure AI service in settings first.'), 'error');
-      return;
-    }
-
-    if (activeConfig.apiKeyStatus === 'decrypt_failed' || activeConfig.apiKeyStatus === 'empty') {
-      toast(t('AI服务的API密钥无法解密或为空，请在设置中重新输入并保存该配置。', 'The AI service API key could not be decrypted or is empty. Please re-enter and save the configuration in settings.'), 'error');
-      return;
-    }
-
-    if (!activeConfig.baseUrl || !activeConfig.apiKey || !activeConfig.model) {
-      toast(t('AI服务配置不完整，请检查API端点、密钥和模型名称。', 'AI service configuration is incomplete. Please check the API endpoint, key, and model name.'), 'error');
-      return;
-    }
-
-    if (repository.analyzed_at) {
-      const confirmMessage = language === 'zh'
-        ? `此仓库已于 ${new Date(repository.analyzed_at).toLocaleString()} 进行过AI分析。\n\n是否要重新分析？这将覆盖现有的分析结果。`
-        : `This repository was analyzed on ${new Date(repository.analyzed_at).toLocaleString()}.\n\nDo you want to re-analyze? This will overwrite the existing analysis results.`;
-
-      if (!await confirm(t('重新分析确认', 'Re-analyze Confirmation'), confirmMessage, { type: 'warning' })) {
-        return;
-      }
-    }
-
-    abortControllerRef.current?.abort();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    const analysisStartedAt = performance.now();
-    setIsLocallyAnalyzing(true);
-    requestAnimationFrame(() => {
-      logger.info('ai.performance', 'Repository card AI spinner painted', {
-        repoId,
-        fullName: repository.full_name,
-        elapsedMs: Math.round(performance.now() - analysisStartedAt),
-      });
-    });
-    setAnalyzingRepository(repoId, true);
-    try {
-      const result = await analyzeRepository({
-        repository,
-        githubToken,
-        aiConfig: activeConfig,
-        language,
-        categories: allCategories,
-        onProgress: (status) => {
-          logger.info('ai.performance', 'Repository card AI analysis step', {
-            repoId,
-            fullName: repository.full_name,
-            status,
-            elapsedMs: Math.round(performance.now() - analysisStartedAt),
-          });
-        },
-        signal: controller.signal,
-      });
-      logger.info('ai.performance', 'Repository card AI request completed', {
-        repoId,
-        fullName: repository.full_name,
-        elapsedMs: Math.round(performance.now() - analysisStartedAt),
-      });
-
-      if (controller.signal.aborted) return;
-
-      const updatedRepo = {
-        ...repository,
-        ai_summary: result.summary,
-        ai_tags: result.tags,
-        ai_platforms: result.platforms,
-        custom_category: result.custom_category,
-        category_locked: result.category_locked,
-        analyzed_at: result.analyzed_at,
-        analysis_failed: result.analysis_failed,
-        analysis_error: undefined,
-      };
-
-      const updateStartedAt = performance.now();
-      updateRepository(updatedRepo);
-      logger.info('ai.performance', 'Repository card AI result stored', {
-        repoId,
-        fullName: repository.full_name,
-        updateMs: Math.round(performance.now() - updateStartedAt),
-        elapsedMs: Math.round(performance.now() - analysisStartedAt),
-      });
-
-      const successMessage = repository.analyzed_at
-        ? (language === 'zh' ? 'AI重新分析完成！' : 'AI re-analysis completed!')
-        : (language === 'zh' ? 'AI分析完成！' : 'AI analysis completed!');
-
-      toast(successMessage, 'success');
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        console.error('AI analysis failed:', error);
-
-        const errorMsg = error instanceof Error && error.message
-          ? error.message
-          : (language === 'zh' ? 'AI分析失败，请检查AI配置和网络连接' : 'AI analysis failed, please check AI configuration and network connection');
-        const failedResult = createFailedAnalysisResult(errorMsg);
-        const failedRepo = {
-          ...repository,
-          analyzed_at: failedResult.analyzed_at,
-          analysis_failed: failedResult.analysis_failed,
-          analysis_error: failedResult.analysis_error,
-        };
-
-        const updateStartedAt = performance.now();
-        updateRepository(failedRepo);
-        logger.info('ai.performance', 'Repository card AI failure stored', {
-          repoId,
-          fullName: repository.full_name,
-          updateMs: Math.round(performance.now() - updateStartedAt),
-          elapsedMs: Math.round(performance.now() - analysisStartedAt),
-        });
-
-        toast(language === 'zh' ? 'AI分析失败，请检查AI配置和网络连接。' : 'AI analysis failed. Please check AI configuration and network connection.', 'error');
-      }
-    } finally {
-      setIsLocallyAnalyzing(false);
-      if (!controller.signal.aborted) {
-        setAnalyzingRepository(repoId, false);
-      }
-    }
-  };
-
   // Convert GitHub URL to DeepWiki URL
   const getDeepWikiUrl = (githubUrl: string) => {
     return githubUrl.replace('github.com', 'deepwiki.com');
-  };
-
-  // 查找相似仓库：利用向量检索匹配语义相关的仓库，并进入相似仓库视图
-  /**
-   * 点击"查找相似仓库"：校验向量搜索就绪后，对源仓库生成 embedding 并在 Worker
-   * 中检索相似仓库，将结果交给 store 进入相似视图。处理加载、空结果与错误态。
-   */
-  const handleFindSimilar = async () => {
-    if (isFindingSimilar) return;
-    if (!vectorSearchAvailable) {
-      toast(
-        language === 'zh'
-          ? '向量搜索未就绪：请先在设置中开启向量搜索并完成索引。'
-          : 'Vector search is not ready. Please enable vector search and build the index in settings first.',
-        'error'
-      );
-      return;
-    }
-
-    const activeConfig = embeddingConfigs.find((c) => c.id === activeEmbeddingConfig);
-    if (!activeConfig) return;
-
-    setIsFindingSimilar(true);
-    try {
-      const embeddingClient = new EmbeddingClient({
-        ...activeConfig,
-        apiType: activeConfig.apiType,
-        baseUrl: activeConfig.baseUrl,
-        apiKey: activeConfig.apiKey,
-        model: activeConfig.model,
-        dimensions: activeConfig.dimensions,
-      });
-      const vectorService = new VectorSearchService({
-        workerUrl: vectorSearchConfig.workerUrl,
-        authToken: vectorSearchConfig.authToken,
-      });
-
-      const similar = await findSimilarRepositories(repository, {
-        embeddingClient,
-        vectorService,
-        allRepos: repositories,
-        topK: vectorSearchConfig.searchTopK ?? 30,
-        threshold: vectorSearchConfig.searchThreshold ?? 0.35,
-      });
-
-      enterSimilarView(similar, repository);
-
-      if (similar.length === 0) {
-        toast(
-          language === 'zh'
-            ? '未找到相似的仓库。'
-            : 'No similar repositories found.',
-          'info'
-        );
-      }
-    } catch (error) {
-      console.error('Find similar repositories failed:', error);
-      const errorMessage = error instanceof Error && error.message
-        ? error.message
-        : (language === 'zh' ? '查找相似仓库失败，请检查向量搜索配置。' : 'Failed to find similar repositories. Please check vector search configuration.');
-      toast(errorMessage, 'error');
-    } finally {
-      setIsFindingSimilar(false);
-    }
   };
 
   // Convert GitHub URL to Zread URL
@@ -668,44 +491,6 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
     }
   }, [repository.analysis_failed, repository.analyzed_at, language]);
 
-  const t = (zh: string, en: string) => language === 'zh' ? zh : en;
-
-  const handleUnstar = async () => {
-    if (!githubToken) {
-      toast(t('未找到 GitHub Token，请重新登录。', 'GitHub token not found. Please login again.'), 'error');
-      return;
-    }
-
-    const confirmMessage = language === 'zh'
-      ? `确定要取消 Star "${repository.full_name}" 吗？\n\n这将会从您的 GitHub 收藏中移除该仓库。`
-      : `Are you sure you want to unstar "${repository.full_name}"?\n\nThis will remove the repository from your GitHub stars.`;
-
-    if (!await confirm(t('取消Star确认', 'Unstar Confirmation'), confirmMessage, { type: 'danger', confirmText: t('取消Star', 'Unstar') })) {
-      return;
-    }
-
-    setUnstarring(true);
-    try {
-      const githubApi = new GitHubApiService(githubToken);
-      const [owner, repo] = repository.full_name.split('/');
-      await githubApi.unstarRepository(owner, repo);
-      deleteRepository(repository.id);
-      await forceSyncToBackend();
-      const successMessage = language === 'zh'
-        ? '已成功取消 Star'
-        : 'Successfully unstarred';
-      toast(successMessage, 'success');
-    } catch (error) {
-      console.error('Failed to unstar repository:', error);
-      const errorMessage = language === 'zh'
-        ? '取消 Star 失败，请检查网络连接或重新登录。'
-        : 'Failed to unstar repository. Please check your network connection or login again.';
-      toast(errorMessage, 'error');
-    } finally {
-      setUnstarring(false);
-    }
-  };
-
   const dragStartPosRef = useRef<{ x: number; y: number } | null>(null);
   const isDraggingRef = useRef(false);
   const dragHandleRef = useRef<HTMLDivElement>(null);
@@ -792,8 +577,40 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
   // 使用 ref 来跟踪是否已经处理了点击
   const isProcessingClickRef = useRef(false);
 
+  const handleReleaseSheetOutsideDismiss = useCallback<DialogContentPointerDownOutsideHandler>((event) => {
+    // Keep the fallback overlay mounted through the current click sequence.
+    // Otherwise, closing it on pointerdown can retarget the browser click to this card.
+    event.preventDefault();
+    releaseSheetOutsideDismissedAtRef.current = Date.now();
+    window.setTimeout(() => setReleaseSheetOpen(false), 0);
+  }, []);
+
+  const handleEditModalOutsideDismiss = useCallback(() => {
+    editModalOutsideDismissedAtRef.current = Date.now();
+  }, []);
+
   // 使用 useCallback 优化事件处理函数
   const handleCardClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const releaseSheetDismissedAt = releaseSheetOutsideDismissedAtRef.current;
+    if (releaseSheetDismissedAt !== null) {
+      releaseSheetOutsideDismissedAtRef.current = null;
+      if (Date.now() - releaseSheetDismissedAt < 250) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    }
+
+    const editModalDismissedAt = editModalOutsideDismissedAtRef.current;
+    if (editModalDismissedAt !== null) {
+      editModalOutsideDismissedAtRef.current = null;
+      if (Date.now() - editModalDismissedAt < 250) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    }
+
     // 防止重复处理
     if (isProcessingClickRef.current) {
       event.preventDefault();
@@ -855,7 +672,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
 
   // 处理键盘事件，使卡片可键盘操作
   // 当编辑模态框或README模态框打开时，禁用卡片键盘事件
-  const isModalOpen = editModalOpen || readmeModalOpen;
+  const isModalOpen = editModalOpen || readmeModalOpen || releaseSheetOpen;
   
   const handleCardKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     // 仅由卡片自身获得焦点时处理，避免拦截三点菜单等后代控件的原生键盘行为。
@@ -990,7 +807,13 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
                 {isAnalyzing ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Bot className="mr-2 h-3.5 w-3.5" />}
                 {language === 'zh' ? 'AI 分析' : 'Analyze with AI'}
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => toggleReleaseSubscription(repository.id)}>
+              {onAskRepository && (
+                <DropdownMenuItem onSelect={() => onAskRepository(repository)}>
+                  <MessageSquareText className="mr-2 h-3.5 w-3.5" />
+                  {language === 'zh' ? '问答此仓库' : 'Ask this repository'}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onSelect={() => toggleReleaseSubscription()}>
                 {isSubscribed ? <Bell className="mr-2 h-3.5 w-3.5" /> : <BellOff className="mr-2 h-3.5 w-3.5" />}
                 {isSubscribed ? (language === 'zh' ? '取消订阅 Release' : 'Unsubscribe from releases') : (language === 'zh' ? '订阅 Release' : 'Subscribe to releases')}
               </DropdownMenuItem>
@@ -1001,6 +824,10 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setReleaseSheetOpen(true)}>
+                <PackageOpen className="mr-2 h-3.5 w-3.5" />
+                {language === 'zh' ? '查看 Release' : 'View releases'}
+              </DropdownMenuItem>
               <DropdownMenuItem asChild>
                 <a
                   href={language === 'zh' ? getZreadUrl(repository.full_name) : getDeepWikiUrl(repository.html_url)}
@@ -1065,74 +892,172 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         )}
       </div>
 
-      {/* Action Buttons Row - Left and Right Aligned */}
+      {/* Grid actions occupy equal slots from the left; tail actions collapse into a menu when space is constrained. */}
       {viewMode === 'grid' && (
-      <div className="flex items-center justify-between mb-4">
-        {/* Left side: AI Analysis, Release Subscription, and Edit */}
-        <div className="flex items-center gap-1.5">
-          <SelectionAwareButton
-            onClick={handleAIAnalyze}
-            disabled={isAnalyzing}
-            selectionMode={selectionMode}
-            className="bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-muted/40 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-foreground"
-            title={aiButtonTitle}
-          >
-            {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
-          </SelectionAwareButton>
-          <SelectionAwareButton
-            onClick={() => toggleReleaseSubscription(repository.id)}
-            selectionMode={selectionMode}
-            className={`${isSubscribed
-              ? 'bg-primary text-primary-foreground shadow-sm'
-              : 'bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-muted/40 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-foreground'
-            }`}
-            title={isSubscribed ? (language === 'zh' ? '取消订阅发布' : 'Unsubscribe from releases') : (language === 'zh' ? '订阅发布' : 'Subscribe to releases')}
-          >
-            {isSubscribed ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
-          </SelectionAwareButton>
-          <SelectionAwareButton
-            onClick={() => setEditModalOpen(true)}
-            selectionMode={selectionMode}
-            variant="edit"
-            title={language === 'zh' ? '编辑仓库信息' : 'Edit repository info'}
-          >
-            <Edit3 className="w-4 h-4" />
-          </SelectionAwareButton>
+        <div ref={gridActionRowRef} data-testid="grid-action-row" className="mb-4 flex w-full items-center justify-start gap-1.5 overflow-hidden">
+          {visibleGridActionCount >= 1 && (
+            <SelectionAwareButton
+              onClick={handleAIAnalyze}
+              disabled={isAnalyzing}
+              selectionMode={selectionMode}
+              className="bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              title={aiButtonTitle}
+            >
+              {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
+            </SelectionAwareButton>
+          )}
+          {onAskRepository && visibleGridActionCount >= 2 && (
+            <SelectionAwareButton
+              onClick={() => onAskRepository(repository)}
+              selectionMode={selectionMode}
+              className="bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              title={language === 'zh' ? '问答此仓库' : 'Ask this repository'}
+              aria-label={language === 'zh' ? '问答此仓库' : 'Ask this repository'}
+            >
+              <MessageSquareText className="w-4 h-4" />
+            </SelectionAwareButton>
+          )}
+          {visibleGridActionCount >= 3 && (
+            <SelectionAwareButton
+              onClick={() => toggleReleaseSubscription()}
+              selectionMode={selectionMode}
+              className={`${isSubscribed
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground'
+              }`}
+              title={isSubscribed ? (language === 'zh' ? '取消订阅发布' : 'Unsubscribe from releases') : (language === 'zh' ? '订阅发布' : 'Subscribe to releases')}
+            >
+              {isSubscribed ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+            </SelectionAwareButton>
+          )}
+          {visibleGridActionCount >= 4 && (
+            <SelectionAwareButton
+              onClick={() => setEditModalOpen(true)}
+              selectionMode={selectionMode}
+              variant="edit"
+              title={language === 'zh' ? '编辑仓库信息' : 'Edit repository info'}
+            >
+              <Edit3 className="w-4 h-4" />
+            </SelectionAwareButton>
+          )}
+          {visibleGridActionCount >= 5 && (
+            <SelectionAwareButton
+              onClick={() => setReleaseSheetOpen(true)}
+              selectionMode={selectionMode}
+              className="bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              title={language === 'zh' ? '查看 Release' : 'View releases'}
+              aria-label={language === 'zh' ? '查看 Release' : 'View releases'}
+            >
+              <PackageOpen className="w-4 h-4" />
+            </SelectionAwareButton>
+          )}
+          {visibleGridActionCount >= 6 && (
+            <a
+              href={language === 'zh' ? getZreadUrl(repository.full_name) : getDeepWikiUrl(repository.html_url)}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(event) => selectionMode && event.preventDefault()}
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground ${selectionMode ? 'pointer-events-none opacity-50' : ''}`}
+              title={language === 'zh' ? '在Zread中查看' : 'View on DeepWiki'}
+            >
+              <BookOpen className="w-4 h-4" />
+            </a>
+          )}
+          {visibleGridActionCount >= 7 && (
+            <a
+              href={repository.html_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(event) => selectionMode && event.preventDefault()}
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground ${selectionMode ? 'pointer-events-none opacity-50' : ''}`}
+              title={language === 'zh' ? '在GitHub上查看' : 'View on GitHub'}
+            >
+              <ExternalLink className="w-4 h-4" />
+            </a>
+          )}
+          {visibleGridActionCount >= 8 && (
+            <SelectionAwareButton
+              onClick={handleUnstar}
+              disabled={unstarring}
+              selectionMode={selectionMode}
+              variant="unstar"
+              title={language === 'zh' ? '取消 Star' : 'Unstar'}
+            >
+              <StarOff className={`w-4 h-4 ${unstarring ? 'animate-pulse' : ''}`} />
+            </SelectionAwareButton>
+          )}
+          {visibleGridActionCount < 8 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  disabled={selectionMode}
+                  className="h-8 w-8 shrink-0 rounded-md bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  aria-label={language === 'zh' ? '更多仓库操作' : 'More repository actions'}
+                  title={language === 'zh' ? '更多仓库操作' : 'More repository actions'}
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-52" onClick={(event) => event.stopPropagation()}>
+                {visibleGridActionCount < 1 && (
+                  <DropdownMenuItem disabled={isAnalyzing} onSelect={() => void handleAIAnalyze()}>
+                    {isAnalyzing ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Bot className="mr-2 h-3.5 w-3.5" />}
+                    {language === 'zh' ? 'AI 分析' : 'Analyze with AI'}
+                  </DropdownMenuItem>
+                )}
+                {onAskRepository && visibleGridActionCount < 2 && (
+                  <DropdownMenuItem onSelect={() => onAskRepository(repository)}>
+                    <MessageSquareText className="mr-2 h-3.5 w-3.5" />
+                    {language === 'zh' ? '问答此仓库' : 'Ask this repository'}
+                  </DropdownMenuItem>
+                )}
+                {visibleGridActionCount < 3 && (
+                  <DropdownMenuItem onSelect={() => toggleReleaseSubscription()}>
+                    {isSubscribed ? <Bell className="mr-2 h-3.5 w-3.5" /> : <BellOff className="mr-2 h-3.5 w-3.5" />}
+                    {isSubscribed ? (language === 'zh' ? '取消订阅 Release' : 'Unsubscribe from releases') : (language === 'zh' ? '订阅 Release' : 'Subscribe to releases')}
+                  </DropdownMenuItem>
+                )}
+                {visibleGridActionCount < 4 && (
+                  <DropdownMenuItem onSelect={() => setEditModalOpen(true)}>
+                    <Edit3 className="mr-2 h-3.5 w-3.5" />
+                    {language === 'zh' ? '编辑仓库信息' : 'Edit repository info'}
+                  </DropdownMenuItem>
+                )}
+                {visibleGridActionCount < 5 && (
+                  <DropdownMenuItem onSelect={() => setReleaseSheetOpen(true)}>
+                    <PackageOpen className="mr-2 h-3.5 w-3.5" />
+                    {language === 'zh' ? '查看 Release' : 'View releases'}
+                  </DropdownMenuItem>
+                )}
+                {visibleGridActionCount < 6 && (
+                  <DropdownMenuItem asChild>
+                    <a href={language === 'zh' ? getZreadUrl(repository.full_name) : getDeepWikiUrl(repository.html_url)} target="_blank" rel="noopener noreferrer">
+                      <BookOpen className="mr-2 h-3.5 w-3.5" />
+                      {language === 'zh' ? '在 Zread 中查看' : 'View on DeepWiki'}
+                    </a>
+                  </DropdownMenuItem>
+                )}
+                {visibleGridActionCount < 7 && (
+                  <DropdownMenuItem asChild>
+                    <a href={repository.html_url} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink className="mr-2 h-3.5 w-3.5" />
+                      {language === 'zh' ? '在 GitHub 中查看' : 'View on GitHub'}
+                    </a>
+                  </DropdownMenuItem>
+                )}
+                {visibleGridActionCount < 8 && (
+                  <DropdownMenuItem className="text-destructive focus:text-destructive" disabled={unstarring} onSelect={() => void handleUnstar()}>
+                    <StarOff className={`mr-2 h-3.5 w-3.5 ${unstarring ? 'animate-pulse' : ''}`} />
+                    {language === 'zh' ? '取消 Star' : 'Unstar'}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
-
-        {/* Right side: Zread/DeepWiki, GitHub Links, and Unstar */}
-        <div className="flex items-center gap-1.5">
-          <a
-            href={language === 'zh' ? getZreadUrl(repository.full_name) : getDeepWikiUrl(repository.html_url)}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => selectionMode && e.preventDefault()}
-            className={`flex h-8 w-8 items-center justify-center rounded-md bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-muted/40 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-foreground ${selectionMode ? 'pointer-events-none opacity-50' : ''}`}
-            title={language === 'zh' ? '在Zread中查看' : 'View on DeepWiki'}
-          >
-            <BookOpen className="w-4 h-4" />
-          </a>
-          <a
-            href={repository.html_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => selectionMode && e.preventDefault()}
-            className={`flex h-8 w-8 items-center justify-center rounded-md bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground dark:bg-muted/40 dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-foreground ${selectionMode ? 'pointer-events-none opacity-50' : ''}`}
-            title={language === 'zh' ? '在GitHub上查看' : 'View on GitHub'}
-          >
-            <ExternalLink className="w-4 h-4" />
-          </a>
-          <SelectionAwareButton
-            onClick={handleUnstar}
-            disabled={unstarring}
-            selectionMode={selectionMode}
-            variant="unstar"
-            title={language === 'zh' ? '取消 Star' : 'Unstar'}
-          >
-            <StarOff className={`w-4 h-4 ${unstarring ? 'animate-pulse' : ''}`} />
-          </SelectionAwareButton>
-        </div>
-      </div>
       )}
 
       {/* Description with shared Tooltip */}
@@ -1306,8 +1231,8 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
               }}
               className={`flex items-center justify-center w-7 h-7 rounded-md p-0 transition-colors ${
                 isSelected
-                  ? 'bg-accent text-foreground dark:bg-accent dark:text-foreground'
-                  : 'text-muted-foreground dark:text-muted-foreground hover:bg-muted dark:hover:bg-accent'
+                  ? 'bg-accent text-accent-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
               }`}
               title={isSelected ? (language === 'zh' ? '取消选择' : 'Deselect') : (language === 'zh' ? '选择' : 'Select')}
             >
@@ -1324,18 +1249,53 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         <RepositoryEditModal
           isOpen={editModalOpen}
           onClose={() => setEditModalOpen(false)}
+          onOutsideDismiss={handleEditModalOutsideDismiss}
           repository={repository}
         />,
         document.body
       )}
 
-      {/* README Modal - Using portal to render outside card container */}
+      {/* README Modal - lazily loaded and rendered outside the card container */}
       {readmeModalOpen && createPortal(
-        <ReadmeModal
-          isOpen={readmeModalOpen}
-          onClose={() => setReadmeModalOpen(false)}
-          repository={repository}
-        />,
+        <ErrorBoundary>
+          <Suspense
+            fallback={
+              <ReadmeModalLoadingFallback
+                onClose={() => setReadmeModalOpen(false)}
+                onCloseAutoFocus={restoreReadmeTriggerFocus}
+              />
+            }
+          >
+            <LazyReadmeModal
+              isOpen={readmeModalOpen}
+              onClose={() => setReadmeModalOpen(false)}
+              onCloseAutoFocus={restoreReadmeTriggerFocus}
+              repository={repository}
+            />
+          </Suspense>
+        </ErrorBoundary>,
+        document.body
+      )}
+
+      {releaseSheetOpen && createPortal(
+        <ErrorBoundary>
+          <Suspense
+            fallback={
+              <ReleaseSheetLoadingFallback
+                onClose={() => setReleaseSheetOpen(false)}
+                onCloseAutoFocus={restoreReadmeTriggerFocus}
+                onPointerDownOutside={handleReleaseSheetOutsideDismiss}
+              />
+            }
+          >
+            <LazyRepositoryReleaseSheet
+              isOpen={releaseSheetOpen}
+              onClose={() => setReleaseSheetOpen(false)}
+              onCloseAutoFocus={restoreReadmeTriggerFocus}
+              repository={repository}
+            />
+          </Suspense>
+        </ErrorBoundary>,
         document.body
       )}
     </div>
@@ -1378,6 +1338,7 @@ export const RepositoryCard = React.memo(RepositoryCardComponent, (prevProps, ne
     prevProps.selectionMode === nextProps.selectionMode &&
     prevProps.isExitingSelection === nextProps.isExitingSelection &&
     prevProps.viewMode === nextProps.viewMode &&
+    prevProps.onAskRepository === nextProps.onAskRepository &&
     allCategoriesEqual
   );
 });

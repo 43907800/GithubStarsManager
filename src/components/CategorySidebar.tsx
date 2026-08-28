@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Category, Repository } from '../types';
 import { useAppStore, getAllCategories, sortCategoriesByOrder } from '../store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
 import { CategoryEditModal } from './CategoryEditModal';
 import { forceSyncToBackend } from '../services/autoSync';
 import { getAICategory, getDefaultCategory, computeCustomCategory, matchesCategory } from '../utils/categoryUtils';
@@ -40,7 +41,21 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     updateRepository,
     isSidebarCollapsed,
     setSidebarCollapsed,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    customCategories: state.customCategories,
+    hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
+    defaultCategoryOverrides: state.defaultCategoryOverrides,
+    categoryOrder: state.categoryOrder,
+    collapsedSidebarCategoryCount: state.collapsedSidebarCategoryCount,
+    categoryMatchMode: state.categoryMatchMode,
+    deleteCustomCategory: state.deleteCustomCategory,
+    hideDefaultCategory: state.hideDefaultCategory,
+    showDefaultCategory: state.showDefaultCategory,
+    language: state.language,
+    updateRepository: state.updateRepository,
+    isSidebarCollapsed: state.isSidebarCollapsed,
+    setSidebarCollapsed: state.setSidebarCollapsed,
+  })));
 
   const { toast, confirm } = useDialog();
 
@@ -564,7 +579,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                           onClick={() => handleCategoryClick(category.id)}
                           aria-pressed={isSelected}
                           size="sm"
-                          className={`flex h-9 w-full items-center justify-between rounded-md text-left transition-all duration-200 ease-out pr-0 ${
+                          className={`flex h-9 w-full items-center justify-between rounded-md text-left transition-all duration-200 ease-out pr-3 ${
                             isSelected
                               ? 'bg-accent text-accent-foreground font-medium'
                               : isDragTarget

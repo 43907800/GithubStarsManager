@@ -4,6 +4,7 @@ import type { Gist } from '../types';
 import { createGitHubApiService } from '../services/githubApiFactory';
 import { AIService } from '../services/aiService';
 import { useAppStore } from '../store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useDialog } from '../hooks/useDialog';
 import { safeWriteText } from '../utils/clipboardUtils';
 import { getGistFileCount, getGistPrimaryLanguage, getGistTitle } from '../utils/gistUtils';
@@ -34,7 +35,15 @@ export const GistCard: React.FC<GistCardProps> = ({
     updateGist,
     deleteGist,
     setAnalyzingGist,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    githubToken: state.githubToken,
+    aiConfigs: state.aiConfigs,
+    activeAIConfig: state.activeAIConfig,
+    language: state.language,
+    updateGist: state.updateGist,
+    deleteGist: state.deleteGist,
+    setAnalyzingGist: state.setAnalyzingGist,
+  })));
   const isStoreAnalyzing = useAppStore(state => state.analyzingGistIds.has(gist.id));
   const { toast, confirm } = useDialog();
   const [isAnalyzingLocal, setIsAnalyzingLocal] = useState(false);
@@ -167,7 +176,7 @@ export const GistCard: React.FC<GistCardProps> = ({
   return (
     <article
       onClick={() => onOpen(gist)}
-      className="group cursor-pointer rounded-lg border border-border bg-card p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md dark:border-border dark:bg-card/[0.03] dark:hover:border-primary/40"
+      className="ui-card group cursor-pointer p-5"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
@@ -205,7 +214,7 @@ export const GistCard: React.FC<GistCardProps> = ({
             type="button"
             variant="ghost"
             onClick={handleCopyLink}
-            className="h-8 w-8 rounded-lg p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-foreground"
+            className="h-8 w-8 rounded-lg p-0 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
             title={t('复制链接', 'Copy link')}
           >
             <Copy className="h-4 w-4" />
@@ -215,7 +224,7 @@ export const GistCard: React.FC<GistCardProps> = ({
             target="_blank"
             rel="noopener noreferrer"
             onClick={(event) => event.stopPropagation()}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-foreground"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg p-0 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
             title={t('打开链接', 'Open link')}
           >
             <ExternalLink className="h-4 w-4" />
@@ -241,7 +250,7 @@ export const GistCard: React.FC<GistCardProps> = ({
                   event.stopPropagation();
                   onEdit(gist);
                 }}
-                className="h-8 w-8 rounded-lg p-0 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-foreground"
+                className="h-8 w-8 rounded-lg p-0 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                 title={t('编辑', 'Edit')}
               >
                 <Edit3 className="h-4 w-4" />

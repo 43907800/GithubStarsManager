@@ -45,6 +45,7 @@ import {
   Rss,
 } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
 import { isThemePresetId } from '../../constants/themePresets';
 import type { ThemePresetId } from '../../constants/themePresets';
 import { indexedDBStorage } from '../../services/indexedDbStorage';
@@ -250,7 +251,26 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
     setRepositories,
     setReleases,
     setBackendApiSecret,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    user: state.user,
+    repositories: state.repositories,
+    releases: state.releases,
+    aiConfigs: state.aiConfigs,
+    webdavConfigs: state.webdavConfigs,
+    customCategories: state.customCategories,
+    defaultCategoryOverrides: state.defaultCategoryOverrides,
+    hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
+    assetFilters: state.assetFilters,
+    discoveryRepos: state.discoveryRepos,
+    subscriptionRepos: state.subscriptionRepos,
+    releaseSubscriptions: state.releaseSubscriptions,
+    releaseSourceSettings: state.releaseSourceSettings,
+    readReleases: state.readReleases,
+    language: state.language,
+    setRepositories: state.setRepositories,
+    setReleases: state.setReleases,
+    setBackendApiSecret: state.setBackendApiSecret,
+  })));
 
   const [confirmation, setConfirmation] = useState<DeleteConfirmation>({
     type: null,
@@ -1733,7 +1753,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
           {t('选择性删除数据', 'Selective Data Deletion')}
         </h3>
         <div className="bg-card dark:bg-card rounded-lg border border-border dark:border-border overflow-hidden">
-          <div className="divide-y divide-black/[0.06] dark:divide-gray-700">
+          <div className="divide-y divide-border/60 dark:divide-border">
             {dataStats.map((stat) => (
               <div
                 key={stat.key}
@@ -1825,7 +1845,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-black/[0.06] dark:divide-gray-700">
+                <tbody className="divide-y divide-border/60 dark:divide-border">
                   {operationLogs.map((log) => (
                     <tr key={log.id} className="hover:bg-background dark:hover:bg-accent">
                       <td className="px-4 py-2 text-muted-foreground dark:text-muted-foreground">
