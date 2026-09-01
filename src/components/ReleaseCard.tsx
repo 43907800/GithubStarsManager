@@ -2,7 +2,9 @@ import React, { memo, useCallback, useRef, useState, useEffect } from 'react';
 import { ExternalLink, GitBranch, Calendar, Download, ChevronDown, ChevronUp, BookOpen, ArrowUpRight, FolderOpen, Folder, BellOff, FileArchive, Code2, Loader2, CheckCircle2, Sparkles } from 'lucide-react';
 import { Release } from '../types';
 import { formatDistanceToNow } from 'date-fns';
+import { zhCN } from 'date-fns/locale';
 import MarkdownRenderer from './MarkdownRenderer';
+import AssetLeadingIcon from './AssetLeadingIcon';
 import { useAppStore } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useDialog } from '../hooks/useDialog';
@@ -27,7 +29,24 @@ interface DownloadLink {
   downloadCount: number;
   isSourceCode?: boolean;
   assetId?: number;
+  updatedAt?: string;
+  contentType?: string;
 }
+
+/** 资产相对时间：updated_at 非法时不渲染，避免 date-fns 对 Invalid Date 抛错；中文界面用 zhCN。 */
+const AssetUpdatedTime = ({ updatedAt, language }: { updatedAt?: string; language: 'zh' | 'en' }) => {
+  if (!updatedAt) return null;
+  const time = new Date(updatedAt).getTime();
+  if (Number.isNaN(time)) return null;
+  return (
+    <span title={new Date(time).toLocaleString()}>
+      {formatDistanceToNow(new Date(time), {
+        addSuffix: true,
+        ...(language === 'zh' ? { locale: zhCN } : {}),
+      })}
+    </span>
+  );
+};
 
 interface ReleaseCardProps {
   release: Release;
@@ -236,7 +255,12 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
             <div className="hidden md:flex min-w-[140px] flex-col justify-center gap-2 text-xs text-muted-foreground dark:text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <Calendar className="w-3.5 h-3.5" />
-                <span>{formatDistanceToNow(new Date(effectiveTime), { addSuffix: true })}</span>
+                <span>
+                  {formatDistanceToNow(new Date(effectiveTime), {
+                    addSuffix: true,
+                    ...(language === 'zh' ? { locale: zhCN } : {}),
+                  })}
+                </span>
                 {showAssetsUpdatedIndicator && (
                   <span className="text-[10px] px-1 py-px rounded bg-primary/10 text-primary font-medium">
                     {t('资产已更新', 'Assets updated')}
@@ -391,7 +415,7 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
                           ) : link.isSourceCode ? (
                             <Code2 className="w-3.5 h-3.5 text-muted-foreground dark:text-muted-foreground flex-shrink-0" />
                           ) : (
-                            <Download className="w-3.5 h-3.5 text-muted-foreground dark:text-muted-foreground/70 flex-shrink-0" />
+                            <AssetLeadingIcon name={link.name} contentType={link.contentType} />
                           )}
                           <span className={`text-sm truncate ${link.isSourceCode ? 'text-muted-foreground dark:text-muted-foreground font-medium' : 'text-foreground dark:text-muted-foreground'}`}>
                             {link.name}
@@ -403,6 +427,7 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
                               {t('资产已更新', 'Asset updated')}
                             </span>
                           )}
+                          <AssetUpdatedTime updatedAt={link.updatedAt} language={language} />
                           {link.size > 0 && (
                             <span>{formatFileSize(link.size)}</span>
                           )}
@@ -432,7 +457,7 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
                         {link.isSourceCode ? (
                           <Code2 className="w-3.5 h-3.5 text-muted-foreground dark:text-muted-foreground flex-shrink-0" />
                         ) : (
-                          <Download className="w-3.5 h-3.5 text-muted-foreground dark:text-muted-foreground/70 flex-shrink-0" />
+                          <AssetLeadingIcon name={link.name} contentType={link.contentType} />
                         )}
                         <span className={`text-sm truncate ${link.isSourceCode ? 'text-muted-foreground dark:text-muted-foreground font-medium' : 'text-foreground dark:text-muted-foreground'}`}>
                           {link.name}
@@ -444,6 +469,7 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
                             {t('资产已更新', 'Asset updated')}
                           </span>
                         )}
+                        <AssetUpdatedTime updatedAt={link.updatedAt} language={language} />
                         {link.size > 0 && (
                           <span>{formatFileSize(link.size)}</span>
                         )}
