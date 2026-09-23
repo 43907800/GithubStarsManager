@@ -1,20 +1,39 @@
+
+import { useT } from '../../../i18n/useT';
+import type { AppLanguage } from '../../../i18n/languages';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Repository } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { resolveRepositoryChatHeadSha } from '../../../services/repositoryChatService';
 import type { RepositoryChatMessage, RepositoryChatSession } from '../../../types/repositoryChat';
-import { repositoryChatSessionRepository } from '../repositories/sessionRepository';
+import { repositoryChatStorage } from '../../../services/repositoryChatStorage';
 
 const createId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return `repository-chat-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
-const defaultTitle = (language: 'zh' | 'en') => language === 'zh' ? '新对话' : 'New conversation';
+/** 会话默认标题集合：历史会话可能以任意语言创建，判断是否默认标题用集合比较 */
+export const DEFAULT_CHAT_TITLES = new Set([
+  '新对话', 'New conversation', '新しい会話', 'Nueva conversación', 'Nova conversa',
+  'Новый диалог', '新對話', 'Nouvelle conversation', 'Neue Unterhaltung', '새 대화',
+]);
+const DEFAULT_TITLE_BY_LANGUAGE: Record<AppLanguage, string> = {
+  zh: '新对话', en: 'New conversation', ja: '新しい会話', es: 'Nueva conversación', 'pt-BR': 'Nova conversa',
+  ru: 'Новый диалог', 'zh-TW': '新對話', fr: 'Nouvelle conversation', de: 'Neue Unterhaltung', ko: '새 대화',
+};
+const defaultTitle = (language: AppLanguage) => DEFAULT_TITLE_BY_LANGUAGE[language] ?? 'New conversation';
+
+/** 通知全局问答历史入口（SearchBar 徽标、历史抽屉）刷新。 */
+const notifyGlobalHistoryChanged = () => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('gsm:global-chat-history-changed'));
+  }
+};
 
 export interface UseRepositoryChatSessionsOptions {
   repository: Repository | null;
-  language: 'zh' | 'en';
+  language: AppLanguage;
   resolveSourceRefSha?: (repository: Repository, signal?: AbortSignal) => Promise<string>;
 }
 
@@ -23,6 +42,7 @@ export const useRepositoryChatSessions = ({
   language,
   resolveSourceRefSha,
 }: UseRepositoryChatSessionsOptions) => {
+  const t = useT('chat');
   const githubToken = useAppStore((state) => state.githubToken);
   const retainSessionDays = useAppStore((state) => state.repositoryChatSettings.retainSessionDays);
   const [sessions, setSessions] = useState<RepositoryChatSession[]>([]);
@@ -37,7 +57,7 @@ export const useRepositoryChatSessions = ({
       if (operationId === operationIdRef.current) setMessages([]);
       return;
     }
-    const nextMessages = await repositoryChatSessionRepository.listMessages(session.id);
+    const nextMessages = await repositoryChatStorage.listMessages(session.id);
     if (operationId === operationIdRef.current) setMessages(nextMessages);
   }, []);
 
@@ -53,8 +73,8 @@ export const useRepositoryChatSessions = ({
     setIsLoading(true);
     setError(null);
     try {
-      await repositoryChatSessionRepository.purgeExpiredSessions(repository.id, retainSessionDays);
-      const nextSessions = await repositoryChatSessionRepository.listSessionsByRepository(repository.id);
+      await repositoryChatStorage.purgeExpiredSessions(repository.id, retainSessionDays);
+      const nextSessions = await repositoryChatStorage.listSessionsByRepository(repository.id);
       if (operationId !== operationIdRef.current) return;
       setSessions(nextSessions);
       const mostRecent = nextSessions[0] ?? null;
@@ -78,7 +98,7 @@ export const useRepositoryChatSessions = ({
     setError(null);
     try {
       const resolveSha = resolveSourceRefSha ?? ((targetRepository: Repository) => {
-        if (!githubToken) throw new Error(language === 'zh' ? '请先配置 GitHub token。' : 'Configure a GitHub token before starting a conversation.');
+        if (!githubToken) throw new Error(t('useRepositoryChatSessions.configure-a-github-token-before-starting-a-conve'));
         return resolveRepositoryChatHeadSha(targetRepository, githubToken);
       });
       const sourceRefSha = await resolveSha(repository);
@@ -93,11 +113,12 @@ export const useRepositoryChatSessions = ({
         createdAt: now,
         updatedAt: now,
       };
-      await repositoryChatSessionRepository.saveSession(session);
+      await repositoryChatStorage.saveSession(session);
       if (operationId !== operationIdRef.current) return null;
       setSessions((previous) => [session, ...previous]);
       setActiveSession(session);
       setMessages([]);
+      notifyGlobalHistoryChanged();
       return session;
     } catch (unknownError) {
       if (operationId === operationIdRef.current) setError(unknownError instanceof Error ? unknownError.message : 'Unable to create a repository chat session');
@@ -105,7 +126,7 @@ export const useRepositoryChatSessions = ({
     } finally {
       if (operationId === operationIdRef.current) setIsLoading(false);
     }
-  }, [githubToken, language, repository, resolveSourceRefSha]);
+  }, [githubToken, language, repository, resolveSourceRefSha, t]);
 
   const selectSession = useCallback(async (sessionId: string) => {
     const operationId = ++operationIdRef.current;
@@ -119,7 +140,8 @@ export const useRepositoryChatSessions = ({
     setIsLoading(true);
     setError(null);
     try {
-      await repositoryChatSessionRepository.permanentlyDeleteSession(sessionId);
+      await repositoryChatStorage.permanentlyDeleteSession(sessionId);
+      notifyGlobalHistoryChanged();
       if (operationId !== operationIdRef.current) return;
       const nextSessions = sessions.filter((session) => session.id !== sessionId);
       setSessions(nextSessions);
@@ -134,7 +156,7 @@ export const useRepositoryChatSessions = ({
   }, [activeSession, loadSessionMessages, sessions]);
 
   const updateSession = useCallback(async (session: RepositoryChatSession) => {
-    await repositoryChatSessionRepository.saveSession(session);
+    await repositoryChatStorage.saveSession(session);
     setSessions((previous) => previous
       .map((item) => item.id === session.id ? session : item)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));

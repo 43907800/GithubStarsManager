@@ -1,9 +1,18 @@
+import { useT } from "../i18n/useT";
+import type { AppLanguage } from '../i18n/languages';
 import React, { useState, useRef } from 'react';
-import { X, Star, FolderOpen, Bot, Bell, BellOff, CheckSquare, Square, Loader2, Lock, Unlock, RotateCcw } from 'lucide-react';
+import { X, Star, FolderOpen, Bot, Bell, BellOff, CheckSquare, Square, Loader2, Lock, Unlock, RotateCcw, Plug } from 'lucide-react';
 import { Repository } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { Button } from './ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
+import { usePluginActions } from '../plugins/hooks/usePluginActions';
+import { applyPluginActionResult } from '../plugins/applyPluginActionResult';
+import { useDialog } from '../hooks/useDialog';
+import { usePluginExporters } from '../plugins/hooks/usePluginExporters';
+import { pluginClient } from '../plugins/pluginClient';
+import type { RegisteredPluginAction } from '../plugins/types';
 
 interface BulkActionToolbarProps {
   selectedCount: number;
@@ -22,6 +31,98 @@ interface TooltipState {
   y: number;
 }
 
+interface RegisteredExporter {
+  id: string;
+  title: string;
+  fileExtension: string;
+  mimeType: string;
+  pluginId: string;
+  pluginName: string;
+}
+
+const PluginBulkMenu: React.FC<{
+  actions: RegisteredPluginAction[];
+  exporters: RegisteredExporter[];
+  repositories: Repository[];
+  language: AppLanguage;
+  disabled: boolean;
+  onBusyChange: (busy: boolean) => void;
+}> = ({ actions, exporters, repositories, language, disabled, onBusyChange }) => {
+  const { toast } = useDialog();
+  const t = useT('app');
+
+  const runAction = async (action: RegisteredPluginAction) => {
+    onBusyChange(true);
+    try {
+      const operation = await pluginClient.runAction({
+        pluginId: action.pluginId,
+        actionId: action.id,
+        repositories,
+      });
+      if (!operation.success) return toast(operation.error.message, 'error');
+      await applyPluginActionResult(operation.result, toast, language);
+    } catch {
+      toast(t('bulkActionToolbar.plugin-action-failed'), 'error');
+    } finally {
+      onBusyChange(false);
+    }
+  };
+
+  const runExporter = async (exporter: RegisteredExporter) => {
+    onBusyChange(true);
+    try {
+      const operation = await pluginClient.runExporter({
+        pluginId: exporter.pluginId,
+        exporterId: exporter.id,
+        repositories,
+      });
+      if (!operation.success) return toast(operation.error.message, 'error');
+      const url = URL.createObjectURL(new Blob([operation.result.content], { type: operation.result.mimeType }));
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = operation.result.fileName;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      toast(t('bulkActionToolbar.export-complete'), 'success');
+    } catch {
+      toast(t('bulkActionToolbar.plugin-export-failed'), 'error');
+    } finally {
+      onBusyChange(false);
+    }
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          disabled={disabled}
+          aria-label={t('bulkActionToolbar.plugin-actions')}
+          className="h-9 w-9 shrink-0 rounded-lg bg-muted text-muted-foreground hover:bg-accent hover:text-foreground sm:h-10 sm:w-10"
+        >
+          <Plug className="h-4 w-4 sm:h-5 sm:w-5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {actions.map((action) => (
+          <DropdownMenuItem key={`${action.pluginId}:${action.id}`} onSelect={() => void runAction(action)}>
+            <Plug className="mr-2 h-4 w-4" />
+            {action.title}
+          </DropdownMenuItem>
+        ))}
+        {exporters.map((exporter) => (
+          <DropdownMenuItem key={`${exporter.pluginId}:export:${exporter.id}`} onSelect={() => void runExporter(exporter)}>
+            <FolderOpen className="mr-2 h-4 w-4" />
+            {exporter.title}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
+
 export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
   selectedCount,
   repositories,
@@ -34,6 +135,8 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
   const { language } = useAppStore(useShallow((state) => ({
     language: state.language,
   })));
+  const pluginActions = usePluginActions('bulk-toolbar');
+  const pluginExporters = usePluginExporters();
   const [isProcessing, setIsProcessing] = useState(false);
   const [showConfirm, setShowConfirm] = useState<string | null>(null);
   const [isClosing, setIsClosing] = useState(false);
@@ -125,9 +228,8 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
           'restore': { zh: '批量还原', en: 'Bulk Restore' },
         };
         const label = actionLabels[action];
-        const message = language === 'zh'
-          ? `再次点击确认${label?.zh || ''}`
-          : `Click again to confirm ${label?.en || ''}`;
+        const label_text = language === 'zh' ? label?.zh : label?.en;
+        const message = t('bulkActionToolbar.click-again-to-confirm-v1', { v1: label_text || '' });
         setTooltip({
           action,
           message,
@@ -165,7 +267,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
     }
   };
 
-  const t = (zh: string, en: string) => language === 'zh' ? zh : en;
+  const t = useT('app');
 
   if (!shouldRender) return null;
 
@@ -182,7 +284,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
           <div className="flex items-center justify-between sm:justify-start space-x-2 sm:space-x-4">
             <div className="flex items-center space-x-2">
               <span className="text-base sm:text-lg font-semibold text-foreground dark:text-foreground">
-                {t(`已选择 ${selectedCount} 个`, `Selected ${selectedCount}`)}
+                {t('bulkActionToolbar.selected-selectedcount', { selectedCount: selectedCount })}
               </span>
             </div>
 
@@ -193,20 +295,20 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
                 onClick={onSelectAll}
                 disabled={isProcessing}
                 className="flex items-center space-x-1 px-2 sm:px-3 py-1.5 text-xs sm:text-sm text-muted-foreground dark:text-muted-foreground hover:bg-muted dark:hover:bg-accent rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                title={t('全选当前页面', 'Select all on page')}
+                title={t('bulkActionToolbar.select-all-on-page')}
               >
                 <CheckSquare className="w-3 h-3 sm:w-4 sm:h-4" />
-                <span>{t('全选', 'Select All')}</span>
+                <span>{t('bulkActionToolbar.select-all')}</span>
               </Button>
               <Button
                 variant="ghost"
                 onClick={handleDeselectAll}
                 disabled={isProcessing}
                 className="flex items-center space-x-1 px-2 sm:px-3 py-1.5 text-xs sm:text-sm text-muted-foreground dark:text-muted-foreground hover:bg-muted dark:hover:bg-accent rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                title={t('取消选择所有', 'Deselect all')}
+                title={t('bulkActionToolbar.deselect-all')}
               >
                 <Square className="w-3 h-3 sm:w-4 sm:h-4" />
-                <span>{t('不全选', 'Deselect All')}</span>
+                <span>{t('bulkActionToolbar.deselect-all-2')}</span>
               </Button>
             </div>
           </div>
@@ -217,7 +319,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={t('取消 Star', 'Unstar selected repositories')}
+              aria-label={t('bulkActionToolbar.unstar-selected-repositories')}
               onClick={(e) => handleAction('unstar', e)}
               disabled={isProcessing}
               className={`flex-shrink-0 flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 p-0 rounded-lg transition-colors ${
@@ -237,7 +339,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={t('分类', 'Categorize selected repositories')}
+              aria-label={t('bulkActionToolbar.categorize-selected-repositories')}
               onClick={(e) => handleAction('categorize', e)}
               disabled={isProcessing}
               className={`flex-shrink-0 flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 p-0 rounded-lg transition-colors ${
@@ -257,7 +359,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={t('AI总结', 'Generate AI summaries')}
+              aria-label={t('bulkActionToolbar.generate-ai-summaries')}
               onClick={(e) => handleAction('ai-summary', e)}
               disabled={isProcessing}
               className={`flex-shrink-0 flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 p-0 rounded-lg transition-colors ${
@@ -277,7 +379,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={t('订阅 Release', 'Subscribe to releases')}
+              aria-label={t('bulkActionToolbar.subscribe-to-releases')}
               onClick={(e) => handleAction('subscribe', e)}
               disabled={isProcessing}
               className={`flex-shrink-0 flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 p-0 rounded-lg transition-colors ${
@@ -297,7 +399,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={t('取消订阅 Release', 'Unsubscribe from releases')}
+              aria-label={t('bulkActionToolbar.unsubscribe-from-releases')}
               onClick={(e) => handleAction('unsubscribe', e)}
               disabled={isProcessing}
               className={`flex-shrink-0 flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 p-0 rounded-lg transition-colors ${
@@ -317,7 +419,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={t('锁定分类', 'Lock categories')}
+              aria-label={t('bulkActionToolbar.lock-categories')}
               onClick={(e) => handleAction('lock-category', e)}
               disabled={isProcessing}
               className={`flex-shrink-0 flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 p-0 rounded-lg transition-colors ${
@@ -337,7 +439,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={t('解锁分类', 'Unlock categories')}
+              aria-label={t('bulkActionToolbar.unlock-categories')}
               onClick={(e) => handleAction('unlock-category', e)}
               disabled={isProcessing}
               className={`flex-shrink-0 flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 p-0 rounded-lg transition-colors ${
@@ -357,7 +459,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label={t('批量还原', 'Bulk Restore')}
+              aria-label={t('bulkActionToolbar.bulk-restore')}
               onClick={(e) => handleAction('restore', e)}
               disabled={isProcessing}
               className={`flex-shrink-0 flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 p-0 rounded-lg transition-colors ${
@@ -365,7 +467,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
                   ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                   : 'bg-muted text-muted-foreground dark:bg-muted/40 dark:text-muted-foreground hover:bg-accent hover:text-foreground dark:hover:bg-accent dark:hover:text-foreground'
               } disabled:opacity-50 disabled:cursor-not-allowed`}
-              title={t('批量还原', 'Bulk Restore')}
+              title={t('bulkActionToolbar.bulk-restore')}
             >
               {isProcessing && showConfirm === 'restore' ? (
                 <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
@@ -374,6 +476,17 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               )}
             </Button>
 
+            {(pluginActions.actions.length > 0 || pluginExporters.exporters.length > 0) && (
+              <PluginBulkMenu
+                actions={pluginActions.actions}
+                exporters={pluginExporters.exporters}
+                repositories={repositories}
+                language={language}
+                disabled={isProcessing}
+                onBusyChange={setIsProcessing}
+              />
+            )}
+
             <div className="hidden sm:block w-px h-6 bg-muted dark:bg-accent mx-2"></div>
 
             <Button
@@ -381,7 +494,7 @@ export const BulkActionToolbar: React.FC<BulkActionToolbarProps> = ({
               onClick={handleClose}
               disabled={isProcessing}
               className="flex-shrink-0 p-2 text-muted-foreground dark:text-muted-foreground hover:bg-muted dark:hover:bg-accent rounded-lg transition-colors disabled:opacity-50"
-              title={t('关闭工具栏', 'Close toolbar')}
+              title={t('bulkActionToolbar.close-toolbar')}
             >
               <X className="w-4 h-4 sm:w-5 sm:h-5" />
             </Button>

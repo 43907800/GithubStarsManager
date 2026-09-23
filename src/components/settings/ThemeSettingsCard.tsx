@@ -1,3 +1,5 @@
+
+import { useTPair, TranslateFn } from '../../i18n/useT';
 import React from 'react';
 import { Check, Moon, Palette, Sun } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
@@ -8,17 +10,30 @@ import { getThemeSwatch } from '../../lib/themePresets';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Label } from '../ui/label';
 import { RadioGroup, RadioGroupItem } from '../ui/radio-group';
+import { Switch } from '../ui/switch';
+import { REPOSITORY_CARD_FIELD_IDS } from '../../types/repositoryCardFields';
+import { isRepositoryCardFieldVisible } from '../../utils/repositoryCardFields';
 
 interface ThemeSettingsCardProps {
-  t: (zh: string, en: string) => string;
+  t: TranslateFn;
 }
 
 export const ThemeSettingsCard: React.FC<ThemeSettingsCardProps> = ({ t }) => {
-  const { theme, setTheme, themePreset, setThemePreset } = useAppStore(useShallow((state) => ({
+  const tPair = useTPair();
+  const {
+    theme,
+    setTheme,
+    themePreset,
+    setThemePreset,
+    repositoryCardFields,
+    setRepositoryCardField,
+  } = useAppStore(useShallow((state) => ({
     theme: state.theme,
     setTheme: state.setTheme,
     themePreset: state.themePreset,
     setThemePreset: state.setThemePreset,
+    repositoryCardFields: state.repositoryCardFields,
+    setRepositoryCardField: state.setRepositoryCardField,
   })));
   const isDark = theme === 'dark';
 
@@ -57,13 +72,13 @@ export const ThemeSettingsCard: React.FC<ThemeSettingsCardProps> = ({ t }) => {
       <CardHeader>
         <div className="flex items-center space-x-3">
           <Palette className="h-5 w-5 text-muted-foreground" />
-          <CardTitle>{t('外观设置', 'Appearance')}</CardTitle>
+          <CardTitle>{t('themeSettingsCard.appearance')}</CardTitle>
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
         <div>
           <p id="theme-mode-label" className="mb-3 text-sm font-medium text-foreground">
-            {t('显示模式', 'Display Mode')}
+            {t('themeSettingsCard.display-mode')}
           </p>
           <RadioGroup
             aria-labelledby="theme-mode-label"
@@ -78,7 +93,7 @@ export const ThemeSettingsCard: React.FC<ThemeSettingsCardProps> = ({ t }) => {
               <RadioGroupItem value="light" id="theme-mode-light" aria-labelledby="theme-mode-light-label" />
               <Sun className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
               <span id="theme-mode-light-label" className="text-base font-medium text-foreground">
-                {t('浅色', 'Light')}
+                {t('themeSettingsCard.light')}
               </span>
             </Label>
             <Label
@@ -88,7 +103,7 @@ export const ThemeSettingsCard: React.FC<ThemeSettingsCardProps> = ({ t }) => {
               <RadioGroupItem value="dark" id="theme-mode-dark" aria-labelledby="theme-mode-dark-label" />
               <Moon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
               <span id="theme-mode-dark-label" className="text-base font-medium text-foreground">
-                {t('深色', 'Dark')}
+                {t('themeSettingsCard.dark')}
               </span>
             </Label>
           </RadioGroup>
@@ -96,10 +111,10 @@ export const ThemeSettingsCard: React.FC<ThemeSettingsCardProps> = ({ t }) => {
 
         <div>
           <p id="theme-preset-label" className="mb-1 text-sm font-medium text-foreground">
-            {t('主题配色', 'Theme Color')}
+            {t('themeSettingsCard.theme-color')}
           </p>
           <p className="mb-3 text-xs text-muted-foreground">
-            {t('一键切换界面配色，立即生效并自动保存。', 'Switch the interface color scheme instantly; changes apply and persist automatically.')}
+            {t('themeSettingsCard.switch-the-interface-color-scheme-instantly-chan')}
           </p>
           <div
             role="radiogroup"
@@ -108,6 +123,7 @@ export const ThemeSettingsCard: React.FC<ThemeSettingsCardProps> = ({ t }) => {
             onKeyDown={handlePresetGridKeyDown}
           >
             {THEME_PRESETS.map((preset) => {
+
               const swatch = getThemeSwatch(preset, isDark);
               const isActive = themePreset === preset.id;
               return (
@@ -144,11 +160,29 @@ export const ThemeSettingsCard: React.FC<ThemeSettingsCardProps> = ({ t }) => {
                     </span>
                   </span>
                   <span className="line-clamp-1 text-xs font-medium text-foreground">
-                    {t(preset.labelZh, preset.labelEn)}
+                    {tPair(preset.labelZh, preset.labelEn)}
                   </span>
                 </button>
               );
             })}
+          </div>
+        </div>
+
+        {/* 仓库卡片可见字段（开发守则 §14）：只保存声明式开关 */}
+        <div className="border-t border-border pt-5">
+          <p className="text-sm font-medium text-foreground">{t('themeSettingsCard.card-fields')}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t('themeSettingsCard.card-fields-hint')}</p>
+          <div className="mt-3 space-y-2">
+            {REPOSITORY_CARD_FIELD_IDS.map((id) => (
+              <div key={id} className="flex items-center justify-between gap-4">
+                <span className="text-sm text-foreground">{t(`themeSettingsCard.card-field-${id}`)}</span>
+                <Switch
+                  aria-label={t(`themeSettingsCard.card-field-${id}`)}
+                  checked={isRepositoryCardFieldVisible(repositoryCardFields, id)}
+                  onCheckedChange={(checked) => setRepositoryCardField(id, checked)}
+                />
+              </div>
+            ))}
           </div>
         </div>
       </CardContent>

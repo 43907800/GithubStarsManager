@@ -18,6 +18,75 @@ interface GitHubTreeResponse {
 
 const BACKEND_URL_STORAGE_KEY = 'github-stars-manager-backend-url';
 
+const JSON_ARRAY_SETTING_KEYS = new Set([
+  'hiddenDefaultCategoryIds',
+  'categoryOrder',
+  'customCategories',
+  'assetFilters',
+]);
+const JSON_OBJECT_SETTING_KEYS = new Set([
+  'releaseSourceSettings',
+  'defaultCategoryOverrides',
+]);
+
+/**
+ * Parse a SQLite TEXT setting back into an object or array.
+ * Typed values and malformed JSON are returned unchanged.
+ */
+const parseJsonSetting = (value: unknown, expect: 'object' | 'array'): unknown => {
+  if (typeof value !== 'string') return value;
+  try {
+    const parsed = JSON.parse(value);
+    if (expect === 'array' && Array.isArray(parsed)) return parsed;
+    if (expect === 'object' && parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch {
+    return value;
+  }
+  return value;
+};
+
+/**
+ * Hydrate backend settings whose object/array values were stored as JSON TEXT.
+ */
+const hydrateBackendSettings = (settings: Record<string, unknown>): Record<string, unknown> => {
+  const next = { ...settings };
+  for (const key of JSON_ARRAY_SETTING_KEYS) {
+    if (key in next) next[key] = parseJsonSetting(next[key], 'array');
+  }
+  for (const key of JSON_OBJECT_SETTING_KEYS) {
+    if (key in next) next[key] = parseJsonSetting(next[key], 'object');
+  }
+  if (typeof next.collapsedSidebarCategoryCount === 'string') {
+    const parsed = Number(next.collapsedSidebarCategoryCount);
+    if (Number.isFinite(parsed) && parsed >= 1) next.collapsedSidebarCategoryCount = parsed;
+  }
+  return next;
+};
+
+/**
+ * 共享 helper：构造后端 API 鉴权头（fullstack Web 模式下 API_SECRET 的
+ * `Authorization: Bearer ...`）。服务端 `authMiddleware` 对所有 `/api/*`
+ * （除 health）要求该头，直接 `fetch(backendUrl/...)` 的传输层必须复用它，
+ * 否则在配置 API_SECRET 时一律 401。
+ */
+export const getBackendAuthHeaders = (): Record<string, string> => {
+  let secret = '';
+  try {
+    secret = useAppStore.getState().backendApiSecret || '';
+  } catch {
+    secret = '';
+  }
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (secret) {
+    headers['Authorization'] = `Bearer ${secret}`;
+  }
+  return headers;
+};
+
 const readStoredBackendUrl = (): string | null => {
   try {
     return normalizeBackendUrl(localStorage.getItem(BACKEND_URL_STORAGE_KEY) || '');
@@ -28,8 +97,20 @@ const readStoredBackendUrl = (): string | null => {
 
 class BackendAdapter {
   private _backendUrl: string | null = null;
+  private _beforeInitHook: (() => Promise<void>) | null = null;
+
+  registerBeforeInitHook(fn: () => Promise<void>): void {
+    this._beforeInitHook = fn;
+  }
 
   async init(preferredUrl?: string): Promise<void> {
+    if (this._beforeInitHook) {
+      try {
+        await this._beforeInitHook();
+      } catch {
+        // Ignore hook errors so init can proceed
+      }
+    }
     try {
       const configuredUrl = preferredUrl ? normalizeBackendUrl(preferredUrl) : readStoredBackendUrl();
       const urls = preferredUrl
@@ -85,6 +166,11 @@ class BackendAdapter {
     return this._backendUrl;
   }
 
+  /** 供直接 fetch 后端路由的传输层复用（公开版 getAuthHeaders）。 */
+  get backendAuthHeaders(): Record<string, string> {
+    return getBackendAuthHeaders();
+  }
+
   get configuredUrl(): string | null {
     return this._backendUrl || readStoredBackendUrl();
   }
@@ -104,15 +190,7 @@ class BackendAdapter {
   }
 
   private getAuthHeaders(): Record<string, string> {
-    const secret = useAppStore.getState().backendApiSecret || '';
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (secret) {
-      headers['Authorization'] = `Bearer ${secret}`;
-    }
-    return headers;
+    return getBackendAuthHeaders();
   }
   private async fetchWithTimeout(url: string, options?: RequestInit, timeoutMs = 30000): Promise<Response> {
     const startTime = Date.now();
@@ -767,6 +845,9 @@ class BackendAdapter {
     if (!res.ok) await this.throwTranslatedError(res, 'Sync settings error');
   }
 
+  /**
+   * Fetch frontend settings from the backend and hydrate JSON TEXT values.
+   */
   async fetchSettings(): Promise<Record<string, unknown>> {
     if (!this._backendUrl) throw new Error('Backend not available');
 
@@ -774,7 +855,11 @@ class BackendAdapter {
       headers: this.getAuthHeaders()
     });
     if (!res.ok) await this.throwTranslatedError(res, 'Fetch settings error');
-    return res.json() as Promise<Record<string, unknown>>;
+    const settings = await res.json();
+    if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) {
+      throw new Error('invalid settings response');
+    }
+    return hydrateBackendSettings(settings as Record<string, unknown>);
   }
 
   async exportData(): Promise<Record<string, unknown>> {

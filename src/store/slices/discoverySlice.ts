@@ -1,5 +1,9 @@
 
 import type { AppStoreSlice } from '../types';
+import { normalizeXTweetAuth, normalizeXTweetHandleInput } from '../../utils/xTweetFollows';
+import { normalizeTelegramChannelInput } from '../../utils/telegramFollows';
+import { saveEncryptedXAuthViaDesktop, clearEncryptedXAuthViaDesktop } from '../../services/electronProxy';
+import { logger } from '../../services/logger';
 
 export const createDiscoverySlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'setSelectedDiscoveryChannel'
@@ -21,6 +25,16 @@ export const createDiscoverySlice: AppStoreSlice<Pick<import('../types').AppActi
   | 'setDiscoveryTotalCount'
   | 'setDiscoveryScrollPosition'
   | 'setTrendingTimeRange'
+  | 'setWeeklyOnlyCollected'
+  | 'setWeeklySyncStatus'
+  | 'setXTweetSyncStatus'
+  | 'addXTweetFollow'
+  | 'removeXTweetFollow'
+  | 'setXTweetAuth'
+  | 'clearXTweetAuth'
+  | 'setTelegramSyncStatus'
+  | 'addTelegramFollow'
+  | 'removeTelegramFollow'
   | 'appendDiscoveryRepos'
 >> = (set) => ({
     // Discovery actions
@@ -100,6 +114,71 @@ export const createDiscoverySlice: AppStoreSlice<Pick<import('../types').AppActi
       discoveryTotalCount: { ...state.discoveryTotalCount, [channel]: count },
     })),
     setTrendingTimeRange: (range) => set({ trendingTimeRange: range }),
+    setWeeklyOnlyCollected: (only) => set({ weeklyOnlyCollected: only }),
+    setWeeklySyncStatus: (status) => set({ weeklySyncStatus: status }),
+    setXTweetSyncStatus: (status) => set({ xTweetSyncStatus: status }),
+    addXTweetFollow: (handle) => set((state) => {
+      const normalized = normalizeXTweetHandleInput(handle);
+      if (!normalized) return {};
+      const exists = state.xTweetFollows.some(
+        (follow) => follow.handle.toLowerCase() === normalized.toLowerCase(),
+      );
+      if (exists) return {};
+      return {
+        xTweetFollows: [...state.xTweetFollows, { handle: normalized, addedAt: new Date().toISOString() }],
+      };
+    }),
+    removeXTweetFollow: (handle) => set((state) => ({
+      xTweetFollows: state.xTweetFollows.filter(
+        (follow) => follow.handle.toLowerCase() !== handle.toLowerCase(),
+      ),
+    })),
+    setXTweetAuth: (auth) => {
+      const sanitized = normalizeXTweetAuth(auth);
+      if (!sanitized) {
+        clearEncryptedXAuthViaDesktop().catch((err: unknown) => {
+          logger.errorFromError('xAuth', 'Failed to clear encrypted X auth', err);
+        });
+        set((state) => ({
+          xTweetAuth: null,
+          xTweetAuthRevision: (state.xTweetAuthRevision ?? 0) + 1,
+        }));
+        return;
+      }
+      saveEncryptedXAuthViaDesktop(sanitized).catch((err: unknown) => {
+        logger.errorFromError('xAuth', 'Failed to persist encrypted X auth to disk — auth will be lost on restart', err);
+      });
+      set((state) => ({
+        xTweetAuth: sanitized,
+        xTweetAuthRevision: (state.xTweetAuthRevision ?? 0) + 1,
+      }));
+    },
+    clearXTweetAuth: () => {
+      clearEncryptedXAuthViaDesktop().catch((err: unknown) => {
+        logger.errorFromError('xAuth', 'Failed to clear encrypted X auth', err);
+      });
+      set((state) => ({
+        xTweetAuth: null,
+        xTweetAuthRevision: (state.xTweetAuthRevision ?? 0) + 1,
+      }));
+    },
+    setTelegramSyncStatus: (status) => set({ telegramSyncStatus: status }),
+    addTelegramFollow: (channel) => set((state) => {
+      const normalized = normalizeTelegramChannelInput(channel);
+      if (!normalized) return {};
+      const exists = state.telegramFollows.some(
+        (follow) => follow.channel.toLowerCase() === normalized.toLowerCase(),
+      );
+      if (exists) return {};
+      return {
+        telegramFollows: [...state.telegramFollows, { channel: normalized, addedAt: new Date().toISOString() }],
+      };
+    }),
+    removeTelegramFollow: (channel) => set((state) => ({
+      telegramFollows: state.telegramFollows.filter(
+        (follow) => follow.channel.toLowerCase() !== channel.toLowerCase(),
+      ),
+    })),
   setDiscoveryScrollPosition: (channel, position) => set((state) => ({
       discoveryScrollPositions: { ...state.discoveryScrollPositions, [channel]: position },
     })),

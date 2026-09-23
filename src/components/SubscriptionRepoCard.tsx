@@ -1,10 +1,15 @@
+import { getIntlLocale } from '../i18n/format';
+import { useT } from "../i18n/useT";
 import React, { useState, useMemo, useCallback } from 'react';
-import { Star, StarOff, ExternalLink, Bot, GitFork, Sparkles, BookOpen, AlertTriangle } from 'lucide-react';
+import { Star, StarOff, ExternalLink, Bot, GitFork, Sparkles, BookOpen, AlertTriangle, FileText, Calendar } from 'lucide-react';
 import { getPlatformIcon as getSharedPlatformIcon } from './platformMeta';
 import type { DiscoveryRepo } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useDiscoveryRepoActions } from '../features/discovery/hooks/useDiscoveryRepoActions';
 import { ReadmeModal } from './ReadmeModal';
+import { WeeklyIssueModal } from './WeeklyIssueModal';
+import { XTweetModal } from './XTweetModal';
+import { TelegramMessageModal } from './TelegramMessageModal';
 import { Modal } from './Modal';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
@@ -21,7 +26,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
   const language = useAppStore(state => state.language);
   const githubToken = useAppStore(state => state.githubToken);
 
-  const t = useCallback((zh: string, en: string) => language === 'zh' ? zh : en, [language]);
+  const t = useT('releases');
 
   const { analyze, star, executeUnstar, isAnalyzing, isStarring, isStarred } =
     useDiscoveryRepoActions({ repo });
@@ -29,6 +34,12 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
   const [readmeModalOpen, setReadmeModalOpen] = useState(false);
   // 取消Star确认对话框状态（确认 UI 留 View；动作本体在 useDiscoveryRepoActions）
   const [unstarConfirmOpen, setUnstarConfirmOpen] = useState(false);
+  // 周刊频道："查看原贴"弹窗
+  const [issueModalOpen, setIssueModalOpen] = useState(false);
+  // X 推文频道："查看原贴"弹窗
+  const [tweetModalOpen, setTweetModalOpen] = useState(false);
+  // Telegram 频道："查看消息原文"弹窗
+  const [telegramModalOpen, setTelegramModalOpen] = useState(false);
 
   const formatNumber = (num: number) => {
     if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
@@ -97,6 +108,35 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
     setReadmeModalOpen(true);
   }, []);
 
+  // 周刊频道：查看原贴（GitHub 渲染样式的投稿 issue）
+  const handleOpenIssue = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIssueModalOpen(true);
+  }, []);
+
+  // X 推文频道：查看原贴（抓取到的推文正文）
+  const handleOpenTweet = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setTweetModalOpen(true);
+  }, []);
+
+  // Telegram 频道：查看消息原文（抓取到的频道消息正文）
+  const handleOpenTelegramMessage = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setTelegramModalOpen(true);
+  }, []);
+
+  const weeklyIssueLabels = repo.weeklyIssue?.labels ?? [];
+  const isWeeklyCollected = weeklyIssueLabels.some(label => label.toLowerCase() === 'weekly');
+  const weeklyIssueNumberLabel = weeklyIssueLabels.find(label => /^issue-\d+$/i.test(label));
+  const weeklyIssueNumber = weeklyIssueNumberLabel ? Number(weeklyIssueNumberLabel.replace(/^\D+/i, '')) : null;
+  const weeklySubmittedDate = repo.weeklyIssue?.createdAt && Number.isFinite(Date.parse(repo.weeklyIssue.createdAt))
+    ? new Date(repo.weeklyIssue.createdAt).toLocaleDateString(getIntlLocale(language))
+    : '';
+  const tweetDate = repo.xTweet?.createdAt && Number.isFinite(Date.parse(repo.xTweet.createdAt))
+    ? new Date(repo.xTweet.createdAt).toLocaleDateString(getIntlLocale(language))
+    : '';
+
   const cardTitle = repo.full_name || `${repo.owner?.login || ''}/${repo.name || ''}`;
 
   return (
@@ -142,10 +182,10 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
                 className="flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                 title={
                   isAnalyzed 
-                    ? t('重新分析', 'Re-analyze') 
+                    ? t('subscriptionRepoCard.re-analyze') 
                     : isFailed 
-                    ? t('重新分析', 'Re-analyze')
-                    : t('AI分析', 'AI Analyze')
+                    ? t('subscriptionRepoCard.re-analyze')
+                    : t('subscriptionRepoCard.ai-analyze')
                 }
               >
                 {isAnalyzing ? (
@@ -162,10 +202,42 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
                 size="icon"
                 onClick={handleOpenInZRead}
                 className="hidden sm:flex items-center justify-center w-8 h-8 rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-                title={t('在ZRead打开', 'Open in ZRead')}
+                title={t('subscriptionRepoCard.open-in-zread')}
               >
                 <BookOpen className="w-4 h-4" />
               </Button>
+
+              {/* 周刊/推文/频道消息：查看原贴按钮 */}
+              {(repo.weeklyIssue || repo.xTweet || repo.telegram) && (
+                repo.telegram ? (
+                  <Button
+                    size="icon"
+                    onClick={handleOpenTelegramMessage}
+                    className="flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                    title={t('subscriptionRepoCard.view-original-channel-message')}
+                  >
+                    <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  </Button>
+                ) : repo.xTweet ? (
+                  <Button
+                    size="icon"
+                    onClick={handleOpenTweet}
+                    className="flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                    title={t('subscriptionRepoCard.view-original-post')}
+                  >
+                    <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  </Button>
+                ) : (
+                  <Button
+                    size="icon"
+                    onClick={handleOpenIssue}
+                    className="flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                    title={t('subscriptionRepoCard.view-original-post')}
+                  >
+                    <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  </Button>
+                )
+              )}
 
               {/* GitHub button - hidden on small screens */}
               <a
@@ -174,7 +246,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
                 rel="noopener noreferrer"
                 onClick={(event) => event.stopPropagation()}
                 className="hidden sm:flex items-center justify-center w-8 h-8 rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-                title={t('在GitHub打开', 'Open on GitHub')}
+                title={t('subscriptionRepoCard.open-on-github')}
               >
                 <ExternalLink className="w-4 h-4" />
               </a>
@@ -189,7 +261,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
                     ? 'bg-primary text-primary-foreground shadow-sm dark:bg-primary/80 dark:text-primary-foreground'
                     : 'bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground'
                 }`}
-                title={isStarred ? t('取消Star', 'Unstar') : t('添加Star', 'Add Star')}
+                title={isStarred ? t('subscriptionRepoCard.unstar') : t('subscriptionRepoCard.add-star')}
               >
                 {isStarring ? (
                   <div className="w-3.5 h-3.5 sm:w-4 sm:h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
@@ -258,8 +330,32 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
           )}
 
           {/* Tags */}
-          {((repo.ai_tags && repo.ai_tags.length > 0) || (repo.topics && repo.topics.length > 0)) && (
+          {((repo.ai_tags && repo.ai_tags.length > 0) || (repo.topics && repo.topics.length > 0) || repo.weeklyIssue || repo.xTweet || repo.telegram) && (
             <div className="flex flex-wrap gap-1.5 mb-3">
+              {repo.telegram && (
+                <span className="px-2 py-0.5 rounded-md text-xs font-medium bg-primary/10 text-primary dark:text-primary">
+                  @{repo.telegram.channel}
+                </span>
+              )}
+              {repo.xTweet && (
+                <span className="px-2 py-0.5 rounded-md text-xs font-medium bg-primary/10 text-primary dark:text-primary">
+                  @{repo.xTweet.handle}
+                </span>
+              )}
+              {repo.weeklyIssue && (
+                <>
+                  {isWeeklyCollected && (
+                    <span className="px-2 py-0.5 rounded-md text-xs font-medium bg-primary/10 text-primary dark:text-primary">
+                      {t('subscriptionRepoCard.in-weekly')}
+                    </span>
+                  )}
+                  {weeklyIssueNumber != null && (
+                    <span className="px-2 py-0.5 rounded-md text-xs font-medium bg-muted text-muted-foreground dark:text-muted-foreground">
+                      {t('subscriptionRepoCard.issue-weeklyissuenumber', { weeklyIssueNumber: weeklyIssueNumber })}
+                    </span>
+                  )}
+                </>
+              )}
               {(repo.ai_tags || repo.topics || []).slice(0, 5).map((tag) => (
                 <span
                   key={tag}
@@ -275,7 +371,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
           {repo.ai_platforms && repo.ai_platforms.length > 0 && (
             <div className="flex items-center gap-2 mb-3">
               <span className="text-xs text-muted-foreground dark:text-muted-foreground">
-                {t('平台:', 'Platforms:')}
+                {t('subscriptionRepoCard.platforms')}
               </span>
               <div className="flex items-center gap-1">
                 {repo.ai_platforms.slice(0, 5).map((platform) => (
@@ -306,6 +402,12 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
               <GitFork className="w-4 h-4" />
               <span>{formatNumber(repo.forks_count ?? repo.forks ?? 0)}</span>
             </div>
+            {(weeklySubmittedDate || tweetDate) && (
+              <div className="flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5" />
+                <span>{weeklySubmittedDate || tweetDate}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -317,16 +419,14 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
       onClose={() => {
         setUnstarConfirmOpen(false);
       }}
-      title={t('确认取消 Star', 'Confirm Unstar')}
+      title={t('subscriptionRepoCard.confirm-unstar')}
       maxWidth="max-w-sm"
     >
       <div className="space-y-4">
         <div className="flex items-center gap-3 text-muted-foreground dark:text-muted-foreground ">
           <AlertTriangle className="w-8 h-8 flex-shrink-0" />
           <p className="text-sm text-muted-foreground dark:text-muted-foreground">
-            {language === 'zh' 
-              ? `确定要取消 Star "${repo.full_name}" 吗？这将会从您的 GitHub 收藏中移除该仓库。`
-              : `Are you sure you want to unstar "${repo.full_name}"? This will remove the repository from your GitHub stars.`}
+            {t('subscriptionRepoCard.are-you-sure-you-want-to-unstar-v1-this-will-rem', { v1: repo.full_name })}
           </p>
         </div>
         <div className="flex gap-3 justify-end">
@@ -337,7 +437,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
             variant="ghost"
             className="px-4 py-2 rounded-lg text-sm font-medium text-muted-foreground dark:text-muted-foreground hover:bg-muted dark:hover:bg-accent transition-colors"
           >
-            {t('取消', 'Cancel')}
+            {t('subscriptionRepoCard.cancel')}
           </Button>
           <Button
             type="button"
@@ -345,7 +445,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
             onClick={confirmUnstar}
             className="rounded-lg px-4 py-2 text-sm font-medium"
           >
-            {t('确认取消', 'Confirm Unstar')}
+            {t('subscriptionRepoCard.confirm-unstar-2')}
           </Button>
         </div>
       </div>
@@ -356,6 +456,30 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
         isOpen={readmeModalOpen}
         onClose={() => setReadmeModalOpen(false)}
         repository={repo} />
+
+    {/* 周刊原贴 Modal */}
+      {repo.weeklyIssue && (
+        <WeeklyIssueModal
+          isOpen={issueModalOpen}
+          onClose={() => setIssueModalOpen(false)}
+          issue={repo.weeklyIssue} />
+      )}
+
+    {/* X 推文原贴 Modal */}
+      {repo.xTweet && (
+        <XTweetModal
+          isOpen={tweetModalOpen}
+          onClose={() => setTweetModalOpen(false)}
+          tweet={repo.xTweet} />
+      )}
+
+    {/* Telegram 频道消息原文 Modal */}
+      {repo.telegram && (
+        <TelegramMessageModal
+          isOpen={telegramModalOpen}
+          onClose={() => setTelegramModalOpen(false)}
+          message={repo.telegram} />
+      )}
     </>
   );
 };

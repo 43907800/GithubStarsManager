@@ -10,6 +10,7 @@ import {
   type AIToolLoopMessage,
 } from './aiService';
 import { isToolCallCapableApiType } from '../constants/aiCapabilities';
+import { logger } from './logger';
 
 // Minimal AIConfig that lets AIService construct without a real token.
 const makeConfig = () => ({
@@ -20,6 +21,30 @@ const makeConfig = () => ({
   apiKey: '',
   model: 'gpt-test',
   isActive: true,
+});
+
+it('redacts plugin AI request details from debug logs', () => {
+  const debug = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+  const isDebugMode = vi.spyOn(logger, 'isDebugMode').mockReturnValue(true);
+  try {
+    const service = new AIService(makeConfig() as never, 'en', true);
+    const logRequest = service as unknown as { logAIRequestDebug: (
+      startTime: number,
+      context: { apiType: string; model: string; configId: string },
+      result: { responseLength: number },
+      details: Record<string, unknown>,
+    ) => void };
+    logRequest.logAIRequestDebug(Date.now(), { apiType: 'openai', model: 'example', configId: 'test' },
+      { responseLength: 5 }, { url: 'https://secret.example/key', requestBody: 'private prompt', responseBody: 'private answer', status: 200 });
+    expect(debug).toHaveBeenCalledOnce();
+    const metadata = debug.mock.calls[0][2];
+    expect(metadata).toEqual(expect.objectContaining({ status: 200, responseLength: 5 }));
+    expect(JSON.stringify(metadata)).not.toContain('private');
+    expect(JSON.stringify(metadata)).not.toContain('secret.example');
+  } finally {
+    debug.mockRestore();
+    isDebugMode.mockRestore();
+  }
 });
 
 function makeRepo(partial: Partial<Repository> & Pick<Repository, 'id' | 'name' | 'full_name'>): Repository {
@@ -451,5 +476,44 @@ describe('AIService.generateWithTools — native function calling', () => {
     expect(supportsChatToolCalls({ apiType: 'gemini', supportsToolCalls: true })).toBe(false);
     expect(isToolCallCapableApiType('openai-compatible')).toBe(true);
     expect(isToolCallCapableApiType('claude')).toBe(false);
+  });
+});
+
+describe('AIService.analyzeRepository language following', () => {
+  const extractMessages = (body: unknown): Array<{ role: string; content: string }> => {
+    const parsed = body as { messages?: Array<{ role: string; content: string }>; input?: Array<{ role: string; content: string }> };
+    return parsed.messages ?? parsed.input ?? [];
+  };
+
+  const lastMessages = (): Array<{ role: string; content: string }> => {
+    const calls = (window.fetch as ReturnType<typeof vi.fn>).mock.calls;
+    const lastCall = calls[calls.length - 1] as [string, RequestInit] | undefined;
+    return extractMessages(JSON.parse(String(lastCall?.[1]?.body)));
+  };
+
+  beforeEach(() => {
+    (window.fetch as ReturnType<typeof vi.fn>).mockReset();
+    (window.fetch as ReturnType<typeof vi.fn>).mockImplementation(async () => new Response(
+      JSON.stringify({ choices: [{ message: { content: '{"summary":"A sample analysis of the repository.","tags":["tool"],"platforms":["web"]}' } }] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+  });
+
+  it('keeps the English user prompt verbatim for en', async () => {
+    const service = new AIService(makeConfig() as never, 'en');
+    await service.analyzeRepository(makeRepo({ id: 1, name: 'sample', full_name: 'acme/sample' }), '# readme');
+    const joined = lastMessages().map((message) => message.content).join('\n');
+    expect(joined).toContain('A concise English overview');
+    expect(joined).toContain('"summary": "English overview"');
+    expect(joined).not.toContain('Write ALL user-facing output');
+  });
+
+  it('does not force English output when the UI language is Japanese', async () => {
+    const service = new AIService(makeConfig() as never, 'ja');
+    await service.analyzeRepository(makeRepo({ id: 1, name: 'sample', full_name: 'acme/sample' }), '# readme');
+    const joined = lastMessages().map((message) => message.content).join('\n');
+    expect(joined).not.toContain('A concise English overview');
+    expect(joined).not.toContain('"summary": "English overview"');
+    expect(joined).toContain('Write ALL user-facing output in Japanese (日本語)');
   });
 });

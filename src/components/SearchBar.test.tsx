@@ -118,7 +118,7 @@ describe('SearchBar', () => {
       },
       setSearchFilters,
     });
-    mockUseAppStore.mockReturnValue(currentState as ReturnType<typeof useAppStore>);
+    mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => (selector ? selector(currentState) : currentState)) as unknown as typeof useAppStore);
 
     render(<SearchBar />);
 
@@ -145,7 +145,7 @@ describe('SearchBar', () => {
     storeState.setSearchFilters = setSearchFilters;
 
     currentState = storeState;
-    mockUseAppStore.mockReturnValue(storeState as ReturnType<typeof useAppStore>);
+    mockUseAppStore.mockImplementation(((selector?: (state: typeof storeState) => unknown) => (selector ? selector(storeState) : storeState)) as unknown as typeof useAppStore);
 
     const { rerender } = render(<SearchBar />);
 
@@ -175,7 +175,7 @@ describe('SearchBar', () => {
       ],
       setSearchResults,
     });
-    mockUseAppStore.mockReturnValue(currentState as ReturnType<typeof useAppStore>);
+    mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => (selector ? selector(currentState) : currentState)) as unknown as typeof useAppStore);
 
     try {
       render(<SearchBar />);
@@ -218,7 +218,7 @@ describe('SearchBar', () => {
       repositories,
       setSearchResults,
     });
-    mockUseAppStore.mockReturnValue(currentState as ReturnType<typeof useAppStore>);
+    mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => (selector ? selector(currentState) : currentState)) as unknown as typeof useAppStore);
 
     try {
       render(<SearchBar />);
@@ -247,7 +247,7 @@ describe('SearchBar', () => {
     const repositories = [createRepository({ id: 1, name: 'react', full_name: 'facebook/react' })];
     localStorage.setItem('github-stars-search-history', JSON.stringify(['react']));
     currentState = createStoreState({ repositories, setSearchFilters, setSearchResults });
-    mockUseAppStore.mockReturnValue(currentState as ReturnType<typeof useAppStore>);
+    mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => (selector ? selector(currentState) : currentState)) as unknown as typeof useAppStore);
 
     try {
       render(<SearchBar />);
@@ -271,7 +271,7 @@ describe('SearchBar', () => {
     vi.useFakeTimers();
     const repositories = [createRepository({ id: 1, language: 'TypeScript' })];
     currentState = createStoreState({ repositories });
-    mockUseAppStore.mockReturnValue(currentState as ReturnType<typeof useAppStore>);
+    mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => (selector ? selector(currentState) : currentState)) as unknown as typeof useAppStore);
 
     try {
       render(<SearchBar />);
@@ -286,6 +286,60 @@ describe('SearchBar', () => {
       expect(screen.getByText('实时搜索模式 - 匹配仓库名称')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('re-runs search when a health filter chip is toggled', () => {
+    const archived = createRepository({
+      id: 1,
+      name: 'archived-repo',
+      full_name: 'owner/archived-repo',
+      archived: true,
+    });
+    const active = createRepository({
+      id: 2,
+      name: 'active-repo',
+      full_name: 'owner/active-repo',
+      archived: false,
+    });
+    const storeState = createStoreState({
+      repositories: [archived, active],
+      searchFilters: { ...defaultSearchFilters },
+    });
+    const setSearchResults = vi.fn();
+    const setSearchFilters = vi.fn((filters: Partial<SearchFilters>) => {
+      storeState.searchFilters = { ...storeState.searchFilters, ...filters };
+    });
+    storeState.setSearchResults = setSearchResults;
+    storeState.setSearchFilters = setSearchFilters;
+    currentState = storeState;
+    mockUseAppStore.mockImplementation(((selector?: (state: typeof storeState) => unknown) => (selector ? selector(storeState) : storeState)) as unknown as typeof useAppStore);
+
+    const { rerender } = render(<SearchBar />);
+    fireEvent.click(screen.getByRole('button', { name: /过滤器/ }));
+    setSearchResults.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: '已归档' }));
+    expect(setSearchFilters).toHaveBeenCalledWith({ healthArchived: true });
+
+    rerender(<SearchBar />);
+    expect(setSearchResults).toHaveBeenCalledWith([
+      expect.objectContaining({ name: 'archived-repo' }),
+    ]);
+  });
+
+  it('dispatches the global history open event from the 问答历史 button', () => {
+    currentState = createStoreState({});
+    mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => (selector ? selector(currentState) : currentState)) as unknown as typeof useAppStore);
+    const dispatchSpy = vi.fn();
+    window.addEventListener('gsm:open-global-chat-history', dispatchSpy);
+
+    try {
+      render(<SearchBar />);
+      fireEvent.click(screen.getByRole('button', { name: '问答历史' }));
+      expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('gsm:open-global-chat-history', dispatchSpy);
     }
   });
 });

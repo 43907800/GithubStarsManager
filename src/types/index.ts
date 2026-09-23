@@ -1,7 +1,22 @@
 import type { ThemePresetId } from '../constants/themePresets';
+import type { AppLanguage } from '../i18n/languages';
 
+import type { RepositoryCardFields } from './repositoryCardFields';
+export type { RepositoryCardFieldId, RepositoryCardFields } from './repositoryCardFields';
 import type { RepositoryChatSettings } from './repositoryChat';
 export type { RepositoryChatSettings } from './repositoryChat';
+export type {
+  RepositoryHealthEnrichment,
+  RepositoryHealthFact,
+  RepositoryHealthFactId,
+  RepositoryHealthFactKind,
+  RepositoryHealthFactSource,
+  RepositoryHealthGroup,
+  RepositoryHealthGroupView,
+  RepositoryHealthSignal,
+  RepositoryHealthSignalId,
+  RepositoryHealthSnapshot,
+} from './health';
 
 export interface Repository {
   id: number;
@@ -22,6 +37,20 @@ export interface Repository {
     avatar_url: string;
   };
   topics: string[];
+  /**
+   * GitHub 原生状态字段。`/user/starred` 原始响应本就包含这些字段，
+   * 这里把它们纳入类型以便 Repository Health 与筛选复用。
+   *
+   * 后端不持久化这些字段，因此 `src/utils/repositoryMerge.ts` 把它们同时列入
+   * `CLIENT_ONLY_REPOSITORY_FIELDS`（不参与后端同步指纹，避免 Issue #304 的哈希抖动）
+   * 与 `LOCAL_REPOSITORY_FIELDS`（拉取时保留本地值，不被后端响应清空）。
+   */
+  archived?: boolean;
+  disabled?: boolean;
+  fork?: boolean;
+  is_template?: boolean;
+  open_issues_count?: number;
+  default_branch?: string;
   ai_summary?: string;
   ai_tags?: string[];
   ai_platforms?: string[];
@@ -354,7 +383,7 @@ export interface SearchFilters {
   tags: string[];
   languages: string[];
   platforms: string[]; // 新增：平台过滤
-  sortBy: 'stars' | 'updated' | 'name' | 'starred';
+  sortBy: 'stars' | 'updated' | 'name' | 'starred' | 'created';
   sortOrder: 'desc' | 'asc';
   minStars?: number;
   maxStars?: number;
@@ -365,6 +394,15 @@ export interface SearchFilters {
   analysisFailed?: boolean; // 新增：分析是否失败
   /** SPDX id 过滤；过滤面板可采用 `NO_LICENSE_SENTINEL` 表示「无/未声明 license」。 */
   licenses: string[]; // 新增：开源许可过滤
+  /**
+   * Repository Health 客观事实施加的筛选（见 `src/utils/repositoryHealth.ts`）。
+   * 仅使用本地已存在的 `Repository` 字段，不触发额外网络请求；
+   * 依赖 Release 的事实（是否有 Release、最新版本）由 Health 面板与 MCP/AI 复用，
+   * 不进列表筛选——列表筛选器拿不到 Release 数组，硬塞会产生全量重渲染。
+   */
+  healthArchived?: boolean;
+  healthRecentActivity?: boolean;
+  healthHasLicense?: boolean;
 }
 
 export type CategoryMatchMode = 'legacy' | 'effective';
@@ -403,12 +441,34 @@ export const defaultHeaderMenuConfig: HeaderMenuItem[] = [
   { id: 'settings', visible: true, order: 5 },
 ];
 
+export interface AccountWorkspace {
+  repositories: Repository[];
+  lastSync: string | null;
+  gists: Gist[];
+  starredGists: Gist[];
+  selectedGistCategory: GistCategoryId;
+  releases: Release[];
+  releaseSubscriptions: number[];
+  releaseSourceSettings: ReleaseSourceSettings;
+  readReleases: number[];
+  forks: ForkRepo[];
+  readForks: number[];
+  customCategories: Category[];
+  hiddenDefaultCategoryIds: string[];
+  categoryOrder: string[];
+  defaultCategoryOverrides: Record<string, Partial<Category>>;
+  categoryListIdMap: Record<string, string>;
+  syncMode: SyncMode;
+  syncModeConfigured: boolean;
+}
+
 export interface AppState {
   // Auth
   user: GitHubUser | null;
   githubToken: string | null;
   isAuthenticated: boolean;
   hasHydrated: boolean;
+  accountWorkspaces: Record<string, AccountWorkspace>;
   
   // Repositories
   repositories: Repository[];
@@ -417,6 +477,8 @@ export interface AppState {
   lastSync: string | null;
   analyzingRepositoryIds: Set<number>;
   repositoryViewMode: 'grid' | 'list';
+  /** 仓库卡片显示哪些字段（开发守则 §14）：只保存声明式开关 */
+  repositoryCardFields: RepositoryCardFields;
 
   // Gists
   gists: Gist[];
@@ -475,7 +537,7 @@ export interface AppState {
   themePreset: ThemePresetId;
   currentView: 'repositories' | 'gists' | 'releases' | 'forks' | 'settings' | 'subscription';
   selectedCategory: string;
-  language: 'zh' | 'en';
+  language: AppLanguage;
   /** README 文档翻译引擎（微软 / Google / AI），见 TranslationEngine */
   translationEngine: TranslationEngine;
   isSidebarCollapsed: boolean;
@@ -543,6 +605,25 @@ export interface AppState {
   discoveryTotalCount: Record<DiscoveryChannelId, number>;
   discoveryScrollPositions: Record<DiscoveryChannelId, number>;
   trendingTimeRange: TrendingTimeRange;
+  /** 周刊频道过滤器：仅显示已被周刊收录（issue labels 含 'weekly'）的条目 */
+  weeklyOnlyCollected: boolean;
+  /** 周刊频道同步进度（会话级，不持久化） */
+  weeklySyncStatus: WeeklySyncStatus | null;
+  /** X 推文频道：关注博主列表（handle 不含 @，初始化含 geekbb） */
+  xTweetFollows: XTweetFollow[];
+  /**
+   * X 推文频道：可选登录鉴权 Cookie（配置后走 GraphQL 抓取 + 历史翻页）。
+   * 仅内存态，不持久化到 IndexedDB/localStorage（明文 Cookie 防同源脚本读取）。
+   */
+  xTweetAuth: XTweetAuth | null;
+  /** X 鉴权修订号：每次 set/clear 递增的非敏感计数器，用于请求失效判定与列表刷新 */
+  xTweetAuthRevision: number;
+  /** X 推文频道同步/详情补全进度（会话级，不持久化） */
+  xTweetSyncStatus: WeeklySyncStatus | null;
+  /** Telegram 频道：关注频道列表（channel 不含 @，初始化含 geekhub23） */
+  telegramFollows: TelegramFollow[];
+  /** Telegram 频道同步/详情补全进度（会话级，不持久化） */
+  telegramSyncStatus: WeeklySyncStatus | null;
 
   // Subscription
   subscriptionRepos: Record<string, SubscriptionRepo[]>;
@@ -609,9 +690,75 @@ export type SortBy = 'BestMatch' | 'MostStars' | 'MostForks';
 
 export type SortOrder = 'Descending' | 'Ascending';
 
-export type DiscoveryChannelId = 'trending' | 'hot-release' | 'most-popular' | 'topic' | 'search';
+export type DiscoveryChannelId = 'trending' | 'hot-release' | 'most-popular' | 'topic' | 'x-tweet' | 'telegram' | 'weekly' | 'search' | 'code-search';
 
-export type DiscoveryChannelIcon = 'trending' | 'rocket' | 'star' | 'tag' | 'search';
+export type DiscoveryChannelIcon = 'trending' | 'rocket' | 'star' | 'tag' | 'tweet' | 'telegram' | 'weekly' | 'search';
+
+/** 阮一峰周刊频道：来源 issue 的引用信息（周刊收录 = labels 含 'weekly'） */
+export interface WeeklyIssueRef {
+  number: number;
+  title: string;
+  html_url: string;
+  labels: string[];
+  createdAt: string;
+}
+
+/** 周刊频道同步/详情补全进度 */
+export interface WeeklySyncStatus {
+  phase: 'syncing' | 'enriching';
+  current: number;
+  total: number;
+}
+
+/** X 推文频道：一条关注配置（handle 不含 @） */
+export interface XTweetFollow {
+  handle: string;
+  addedAt: string;
+}
+
+/**
+ * X 推文频道：可选的登录态鉴权 Cookie（用户在设置中自行填写）。
+ * 配置后改走 x.com GraphQL 接口：每位博主每页约 20 条推文且支持游标回溯
+ * 历史翻页；留空则退回未登录抓取（每次仅最新一小批、无历史翻页）。
+ */
+export interface XTweetAuth {
+  authToken: string;
+  ct0: string;
+}
+
+/** X 推文频道：仓库来源推文的引用信息（正文缓存供"查看原贴"离线渲染） */
+export interface XTweetRef {
+  tweetId: string;
+  /** 博主 handle（不含 @） */
+  handle: string;
+  displayName: string;
+  /** 推文正文（RSS 输出的 HTML 片段） */
+  content: string;
+  /** 推文链接（https://x.com/<handle>/status/<id>） */
+  html_url: string;
+  createdAt: string;
+}
+
+/** Telegram 频道：一条关注配置（channel 不含 @） */
+export interface TelegramFollow {
+  channel: string;
+  addedAt: string;
+}
+
+/** Telegram 频道：仓库来源消息的引用信息（正文缓存供"查看消息原文"离线渲染） */
+export interface TelegramRef {
+  /** 复合 ID `<channel>/<messageId>` */
+  messageId: string;
+  /** 频道名（不含 @） */
+  channel: string;
+  /** 频道显示名 */
+  displayName: string;
+  /** 消息正文（t.me 公开预览输出的 HTML 片段） */
+  content: string;
+  /** 消息链接（https://t.me/<channel>/<id>） */
+  html_url: string;
+  createdAt: string;
+}
 
 export interface DiscoveryChannel {
   id: DiscoveryChannelId;
@@ -633,6 +780,12 @@ export interface DiscoveryRepo extends Repository {
   rank: number;
   channel: DiscoveryChannelId;
   platform: DiscoveryPlatform;
+  /** 仅 weekly 频道：该仓库对应的周刊投稿 issue */
+  weeklyIssue?: WeeklyIssueRef;
+  /** 仅 x-tweet 频道：该仓库来源的推文 */
+  xTweet?: XTweetRef;
+  /** 仅 telegram 频道：该仓库来源的频道消息 */
+  telegram?: TelegramRef;
 }
 
 export type TrendingTimeRange = 'daily' | 'weekly' | 'monthly';

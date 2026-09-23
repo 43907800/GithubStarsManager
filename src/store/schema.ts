@@ -34,6 +34,9 @@ export const initialSearchFilters: SearchFilters = {
   isEdited: undefined,
   isCategoryLocked: undefined,
   analysisFailed: undefined,
+  healthArchived: undefined,
+  healthRecentActivity: undefined,
+  healthHasLicense: undefined,
 };
 
 export const initialGistSearchFilters: GistSearchFilters = {
@@ -50,6 +53,7 @@ export type PersistedAppState = Partial<
     | 'githubToken'
     | 'isAuthenticated'
     | 'backendApiSecret'
+    | 'accountWorkspaces'
     | 'repositories'
     | 'gists'
     | 'starredGists'
@@ -76,6 +80,7 @@ export type PersistedAppState = Partial<
     | 'collapsedSidebarCategoryCount'
     | 'categoryMatchMode'
     | 'assetFilters'
+    | 'repositoryCardFields'
     | 'theme'
     | 'themePreset'
     | 'currentView'
@@ -109,6 +114,10 @@ export type PersistedAppState = Partial<
     | 'discoverySortBy'
     | 'discoverySortOrder'
     | 'discoverySelectedTopic'
+    | 'weeklyOnlyCollected'
+    | 'xTweetFollows'
+    | 'xTweetAuthRevision'
+    | 'telegramFollows'
     | 'proxyConfig'
     | 'rpcDownloadConfig'
     | 'routeMode'
@@ -480,11 +489,43 @@ export const defaultDiscoveryChannels: DiscoveryChannel[] = [
     enabled: true,
   },
   {
+    id: 'x-tweet',
+    name: 'X 推文',
+    nameEn: 'X Tweets',
+    icon: 'tweet',
+    description: '关注 X 博主推文中分享的 GitHub 项目',
+    enabled: true,
+  },
+  {
+    id: 'telegram',
+    name: 'Telegram 频道',
+    nameEn: 'Telegram Channels',
+    icon: 'telegram',
+    description: '关注 Telegram 频道消息中分享的 GitHub 项目',
+    enabled: true,
+  },
+  {
+    id: 'weekly',
+    name: '阮一峰周刊',
+    nameEn: 'Ruanyifeng Weekly',
+    icon: 'weekly',
+    description: '阮一峰科技爱好者周刊的开源项目投稿精选',
+    enabled: true,
+  },
+  {
     id: 'search',
-    name: '搜索发现',
-    nameEn: 'Search',
+    name: '仓库搜索',
+    nameEn: 'Repo Search',
     icon: 'search',
     description: '自定义搜索发现新项目',
+    enabled: true,
+  },
+  {
+    id: 'code-search',
+    name: '代码搜索',
+    nameEn: 'Code Search',
+    icon: 'search',
+    description: '公开仓库代码全文检索，支持正则与仓库/路径/语言过滤',
     enabled: true,
   },
 ];

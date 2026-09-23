@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Repository } from '../types';
 import { mergeRepositoriesPreservingLocalMetadata, stripLocalRepositoryFields } from '../utils/repositoryMerge';
 import { hasActiveSearchFilters } from '../utils/repoSearch';
-import { repositoryPayloadHash, syncFromBackend } from './autoSync';
+import { repositoryPayloadHash, resetSyncHashes, startAutoSync, stopAutoSync, syncFromBackend, syncToBackend } from './autoSync';
 import { backend } from './backendAdapter';
 import { useAppStore } from '../store/useAppStore';
 
@@ -16,6 +16,13 @@ vi.mock('./backendAdapter', () => ({
     fetchEmbeddingConfigs: vi.fn(),
     fetchVectorSearchConfig: vi.fn(),
     fetchSettings: vi.fn(),
+    syncRepositories: vi.fn().mockResolvedValue(undefined),
+    syncReleases: vi.fn().mockResolvedValue(undefined),
+    syncAIConfigs: vi.fn().mockResolvedValue(undefined),
+    syncWebDAVConfigs: vi.fn().mockResolvedValue(undefined),
+    syncEmbeddingConfigs: vi.fn().mockResolvedValue(undefined),
+    syncVectorSearchConfig: vi.fn().mockResolvedValue(undefined),
+    syncSettings: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -220,6 +227,121 @@ describe('syncFromBackend two-pull loop (Issue #304 end-to-end)', () => {
 
     expect(useAppStore.getState().repositories).toBe(repositoriesAfterFirstPull);
     expect(useAppStore.getState().searchResults).toBe(searchResultsBeforePull);
+  });
+
+  it('does not wipe local repositories when the backend returns an empty list', async () => {
+    vi.mocked(backend.fetchRepositories).mockResolvedValue({ repositories: [], total: 0 });
+    const localRepo = createRepository(1, { ai_summary: 'keep-me' });
+    useAppStore.setState({
+      repositories: [localRepo],
+      searchResults: [localRepo],
+    });
+
+    await syncFromBackend();
+
+    expect(useAppStore.getState().repositories).toHaveLength(1);
+    expect(useAppStore.getState().repositories[0].ai_summary).toBe('keep-me');
+  });
+
+  it('force pull applies backend repositories even when a local debounce is pending', async () => {
+    const backendRepos = [createRepository(2, { ai_summary: 'from-backend' })];
+    vi.mocked(backend.fetchRepositories).mockResolvedValue({ repositories: backendRepos, total: 1 });
+    const localRepo = createRepository(1, { ai_summary: 'local-only' });
+    useAppStore.setState({
+      repositories: [localRepo],
+      searchResults: [localRepo],
+    });
+
+    await syncFromBackend({ force: true });
+
+    expect(useAppStore.getState().repositories).toHaveLength(1);
+    expect(useAppStore.getState().repositories[0].id).toBe(2);
+    expect(useAppStore.getState().repositories[0].ai_summary).toBe('from-backend');
+  });
+
+  it('force pull keeps an empty backend list instead of preserving leftover local repos', async () => {
+    vi.mocked(backend.fetchRepositories).mockResolvedValue({ repositories: [], total: 0 });
+    const localRepo = createRepository(1, { ai_summary: 'local-only' });
+    useAppStore.setState({
+      repositories: [localRepo],
+      searchResults: [localRepo],
+    });
+
+    await syncFromBackend({ force: true });
+
+    expect(useAppStore.getState().repositories).toEqual([]);
+  });
+});
+
+describe('sync defaultCategoryOverrides with backend settings', () => {
+  let originalState: ReturnType<typeof useAppStore.getState>;
+  let unsubscribe: (() => void) | undefined;
+
+  const stubBackendSlices = () => {
+    vi.mocked(backend.fetchRepositories).mockResolvedValue({ repositories: [], total: 0 });
+    vi.mocked(backend.fetchReleases).mockResolvedValue({ releases: [], total: 0 });
+    vi.mocked(backend.fetchAIConfigs).mockResolvedValue([]);
+    vi.mocked(backend.fetchWebDAVConfigs).mockResolvedValue([]);
+    vi.mocked(backend.fetchEmbeddingConfigs).mockResolvedValue([]);
+    vi.mocked(backend.fetchVectorSearchConfig).mockResolvedValue({
+      enabled: false, workerUrl: '', authToken: '', embeddingConfigId: '', indexMode: 'readme', readmeMaxChars: 6000,
+    });
+  };
+
+  beforeEach(() => {
+    originalState = useAppStore.getState();
+    stubBackendSlices();
+    resetSyncHashes();
+    vi.mocked(backend.fetchSettings).mockResolvedValue({});
+    vi.mocked(backend.syncSettings).mockClear();
+    useAppStore.setState({ defaultCategoryOverrides: {} });
+  });
+
+  afterEach(() => {
+    if (unsubscribe) {
+      stopAutoSync(unsubscribe);
+      unsubscribe = undefined;
+    }
+    useAppStore.setState(originalState);
+  });
+
+  it('applies defaultCategoryOverrides from backend settings', async () => {
+    const defaultCategoryOverrides = { web: { name: 'Web Apps', keywords: ['web'] } };
+    vi.mocked(backend.fetchSettings).mockResolvedValue({ defaultCategoryOverrides });
+
+    await syncFromBackend();
+
+    expect(useAppStore.getState().defaultCategoryOverrides).toEqual(defaultCategoryOverrides);
+  });
+
+  it('pushes defaultCategoryOverrides with the rest of settings', async () => {
+    const defaultCategoryOverrides = { ai: { name: 'AI Tools', icon: 'sparkles' } };
+    useAppStore.setState({ defaultCategoryOverrides });
+
+    await syncToBackend();
+
+    expect(vi.mocked(backend.syncSettings)).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultCategoryOverrides }),
+    );
+  });
+
+  it('queues a backend push when defaultCategoryOverrides change locally', async () => {
+    vi.useFakeTimers();
+    try {
+      unsubscribe = startAutoSync();
+      vi.mocked(backend.syncSettings).mockClear();
+      useAppStore.setState({ defaultCategoryOverrides: { web: { name: 'Web' } } });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(vi.mocked(backend.syncSettings)).toHaveBeenCalledWith(
+        expect.objectContaining({ defaultCategoryOverrides: { web: { name: 'Web' } } }),
+      );
+    } finally {
+      if (unsubscribe) {
+        stopAutoSync(unsubscribe);
+        unsubscribe = undefined;
+      }
+      vi.useRealTimers();
+    }
   });
 });
 

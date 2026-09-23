@@ -1,16 +1,20 @@
+import { useT } from "../../../i18n/useT";
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { DiscoveryChannelId, DiscoveryRepo, PaginatedDiscoveryRepositories } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { selectDiscoveryViewState } from '../../../store/selectors';
 import { GitHubApiService } from '../../../services/githubApi';
+import { syncWeeklyChannel } from '../../../services/weeklyIssuesService';
+import { syncXTweetChannel } from '../../../services/xTweetService';
+import { syncTelegramChannel } from '../../../services/telegramService';
 import { AIService } from '../../../services/aiService';
 import { AIAnalysisOptimizer } from '../../../services/aiAnalysisOptimizer';
 import { discoveryAnalysisStorage } from '../../../services/discoveryAnalysisStorage';
 import { buildCategoryHints, resolveCategoryAssignment } from '../../../utils/categoryUtils';
 import { getAllCategories } from '../../../store/useAppStore';
 import { useDialog } from '../../../hooks/useDialog';
-import { useAuthSessionGeneration } from '../../lifecycle/useAuthSessionGeneration';
+import { useAuthSessionGeneration } from '../../../hooks/useAuthSessionGeneration';
 
 const getChannelRequestSignature = (state: ReturnType<typeof selectDiscoveryViewState>, channelId: DiscoveryChannelId) => {
   const common = [state.githubToken, state.discoveryPlatform];
@@ -18,6 +22,12 @@ const getChannelRequestSignature = (state: ReturnType<typeof selectDiscoveryView
     case 'trending': return JSON.stringify([...common, state.trendingTimeRange]);
     case 'topic': return JSON.stringify([...common, state.discoverySelectedTopic]);
     case 'search': return JSON.stringify([...common, state.discoverySearchQuery, state.discoveryLanguage, state.discoverySortBy, state.discoverySortOrder]);
+    // 周刊过滤为客户端行为，但签名纳入 weeklyOnlyCollected 以便切换过滤器时重跑入口重建切片
+    case 'weekly': return JSON.stringify([...common, state.weeklyOnlyCollected]);
+    // 关注列表/鉴权变化会改变抓取范围，纳入签名作废旧请求
+    // （修订号区分"不同 Cookie 之间的切换"，布尔值做不到）
+    case 'x-tweet': return JSON.stringify([...common, state.xTweetFollows, state.xTweetAuth !== null, state.xTweetAuthRevision]);
+    case 'telegram': return JSON.stringify([...common, state.telegramFollows]);
     default: return JSON.stringify(common);
   }
 };
@@ -44,17 +54,26 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
   useEffect(() => {
     setIsAnalyzing(false);
     setAnalysisProgress({ current: 0, total: 0 });
+    // 账号切换后旧会话的周刊/推文/频道同步进度不再属于当前页面，直接清空
+    useAppStore.getState().setWeeklySyncStatus(null);
+    useAppStore.getState().setXTweetSyncStatus(null);
+    useAppStore.getState().setTelegramSyncStatus(null);
     return () => {
       optimizerRef.current?.abort();
       optimizerRef.current = null;
     };
   }, [authSessionIdentity, setAnalysisProgress]);
-  const t = useCallback((zh: string, en: string) => state.language === 'zh' ? zh : en, [state.language]);
+  const t = useT('discovery');
+  const tRef = useRef(t);
+  useEffect(() => {
+    // 提交完成后同步引用，避免渲染期副作用
+    tRef.current = t;
+  }, [t]);
 
   const refreshChannel = useCallback(async (channelId: DiscoveryChannelId, page = 1, append = false) => {
     const currentState = latestStateRef.current;
     if (!currentState.githubToken) {
-      toast(t('GitHub Token 未找到，请重新登录。', 'GitHub token not found. Please login again.'), 'error');
+      toast(tRef.current('useDiscoveryActions.github-token-not-found-please-login-again'), 'error');
       return;
     }
     const requestVersion = (channelRequestVersionRef.current[channelId] ?? 0) + 1;
@@ -97,6 +116,50 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
             ? await api.searchRepositories(currentState.discoverySearchQuery, currentState.discoveryPlatform, currentState.discoveryLanguage, currentState.discoverySortBy, currentState.discoverySortOrder, page)
             : { repos: [], hasMore: false, nextPageIndex: page + 1, totalCount: 0 };
           break;
+        case 'weekly':
+          // 新请求开始即清掉旧状态：缓存命中时 syncWeeklyChannel 不会回调 onStatus，
+          // 不清会残留上一轮的进度文案
+          useAppStore.getState().setWeeklySyncStatus(null);
+          result = await syncWeeklyChannel(
+            api,
+            page,
+            currentState.weeklyOnlyCollected,
+            // 只有当前请求有权写进度，避免切换账号/过滤器后旧任务覆盖新页面的状态
+            (status) => {
+              if (isCurrentRequest()) {
+                useAppStore.getState().setWeeklySyncStatus(status);
+              }
+            },
+          );
+          break;
+        case 'x-tweet':
+          useAppStore.getState().setXTweetSyncStatus(null);
+          result = await syncXTweetChannel(
+            api,
+            page,
+            currentState.xTweetFollows,
+            (status) => {
+              if (isCurrentRequest()) {
+                useAppStore.getState().setXTweetSyncStatus(status);
+              }
+            },
+            undefined,
+            currentState.xTweetAuth,
+          );
+          break;
+        case 'telegram':
+          useAppStore.getState().setTelegramSyncStatus(null);
+          result = await syncTelegramChannel(
+            api,
+            page,
+            currentState.telegramFollows,
+            (status) => {
+              if (isCurrentRequest()) {
+                useAppStore.getState().setTelegramSyncStatus(status);
+              }
+            },
+          );
+          break;
         default:
           result = { repos: [], hasMore: false, nextPageIndex: page + 1, totalCount: 0 };
       }
@@ -119,13 +182,16 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
           analysis_error: analysis.analysis_error,
         } : newRepo;
       });
-      if (append) currentState.appendDiscoveryRepos(channelId, mergedRepos);
+      // x-tweet/telegram 每页返回累积前缀切片（服务按页整体重建窗口），加载
+      // 更多时用替换语义写入，否则加深拉取新增的卡片落进已消费窗口内永远补不到
+      const replacesOnAppend = channelId === 'x-tweet' || channelId === 'telegram';
+      if (append && !replacesOnAppend) currentState.appendDiscoveryRepos(channelId, mergedRepos);
       else currentState.setDiscoveryRepos(channelId, mergedRepos);
       currentState.setDiscoveryHasMore(channelId, result.hasMore);
       currentState.setDiscoveryNextPage(channelId, result.nextPageIndex);
       if (result.totalCount !== undefined) currentState.setDiscoveryTotalCount(channelId, result.totalCount);
       currentState.setDiscoveryLastRefresh(channelId, new Date().toISOString());
-      if (append && scrollContainerRef.current) {
+      if (append && !replacesOnAppend && scrollContainerRef.current) {
         requestAnimationFrame(() => {
           const cards = scrollContainerRef.current?.querySelectorAll('[data-repo-index]');
           const target = cards?.[previousCount] as HTMLElement | undefined;
@@ -135,32 +201,51 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
     } catch (error) {
       if (!isCurrentRequest()) return;
       console.error(`Failed to refresh channel ${channelId}:`, error);
-      if (append) currentState.setDiscoveryLoadMoreError(channelId, t('加载更多失败，请重试', 'Failed to load more, please retry'));
-      else toast(t('获取数据失败，请检查网络连接或GitHub Token。', 'Failed to fetch data. Please check your network connection or GitHub Token.'), 'error');
+      if (append) {
+        currentState.setDiscoveryLoadMoreError(channelId, tRef.current('useDiscoveryActions.failed-to-load-more-please-retry'));
+      } else {
+        const errorMsg = error instanceof Error ? error.message : '';
+        if (channelId === 'x-tweet') {
+          toast(errorMsg ? `${tRef.current('useDiscoveryActions.failed-to-fetch-x-tweets')}: ${errorMsg}` : tRef.current('useDiscoveryActions.failed-to-fetch-x-tweets-please-check-your-netwo'), 'error');
+        } else if (channelId === 'telegram') {
+          toast(errorMsg ? `${tRef.current('useDiscoveryActions.failed-to-fetch-telegram-messages')}: ${errorMsg}` : tRef.current('useDiscoveryActions.failed-to-fetch-telegram-messages-please-check-y'), 'error');
+        } else {
+          toast(errorMsg || tRef.current('useDiscoveryActions.failed-to-fetch-data-please-check-your-network-c'), 'error');
+        }
+      }
     } finally {
+      if (channelId === 'weekly' && isCurrentRequest()) {
+        useAppStore.getState().setWeeklySyncStatus(null);
+      }
+      if (channelId === 'x-tweet' && isCurrentRequest()) {
+        useAppStore.getState().setXTweetSyncStatus(null);
+      }
+      if (channelId === 'telegram' && isCurrentRequest()) {
+        useAppStore.getState().setTelegramSyncStatus(null);
+      }
       if (ownsLoading()) {
         if (append) currentState.setDiscoveryLoadingMore(channelId, false);
         else currentState.setDiscoveryLoading(channelId, false);
       }
     }
-  }, [captureSession, isCurrentSession, scrollContainerRef, t, toast]);
+  }, [captureSession, isCurrentSession, scrollContainerRef, toast]);
 
   const handleAnalyzePage = useCallback(async () => {
     const analysisState = latestStateRef.current;
     if (!analysisState.githubToken) return;
     const activeConfig = analysisState.aiConfigs.find(config => config.id === analysisState.activeAIConfig);
     if (!activeConfig) {
-      toast(t('请先在设置中配置AI服务。', 'Please configure AI service in settings first.'), 'error');
+      toast(t('useDiscoveryActions.please-configure-ai-service-in-settings-first'), 'error');
       return;
     }
     if (activeConfig.apiKeyStatus === 'decrypt_failed' || activeConfig.apiKeyStatus === 'empty' || !activeConfig.baseUrl || !activeConfig.apiKey || !activeConfig.model) {
-      toast(t('AI服务配置不完整，请检查API端点、密钥和模型名称。', 'AI service configuration is incomplete. Please check the API endpoint, key, and model name.'), 'error');
+      toast(t('useDiscoveryActions.ai-service-configuration-is-incomplete-please-ch'), 'error');
       return;
     }
     const pageRepos = analysisState.discoveryRepos[analysisState.selectedDiscoveryChannel] || [];
     const unanalyzed = pageRepos.filter(repo => !repo.analyzed_at || repo.analysis_failed);
     if (unanalyzed.length === 0) {
-      toast(t('已加载的所有项目均已完成AI分析。', 'All loaded projects have been analyzed.'), 'info');
+      toast(t('useDiscoveryActions.all-loaded-projects-have-been-analyzed'), 'info');
       return;
     }
 
@@ -226,11 +311,11 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
       if (optimizer.isAborted() || !isCurrentSession(analysisSession)) return;
       const successCount = results.filter(result => result.success).length;
       const failCount = results.length - successCount;
-      toast(t(`AI分析完成！成功 ${successCount} 个${failCount > 0 ? `，失败 ${failCount} 个` : ''}`, `AI analysis complete! ${successCount} succeeded${failCount > 0 ? `, ${failCount} failed` : ''}`), successCount === 0 ? 'error' : failCount > 0 ? 'info' : 'success');
+      toast(t(failCount > 0 ? 'useDiscoveryActions.ai-analysis-complete-with-failures' : 'useDiscoveryActions.ai-analysis-complete', { successCount: successCount, failCount: failCount }), successCount === 0 ? 'error' : failCount > 0 ? 'info' : 'success');
     } catch (error) {
       if (optimizer.isAborted() || !isCurrentSession(analysisSession)) return;
       console.error('AI analysis error:', error);
-      toast(t('AI分析失败，请检查AI配置。', 'AI analysis failed. Please check your AI configuration.'), 'error');
+      toast(t('useDiscoveryActions.ai-analysis-failed-please-check-your-ai-configur'), 'error');
     } finally {
       if (optimizerRef.current === optimizer) optimizerRef.current = null;
       if (isCurrentSession(analysisSession)) {

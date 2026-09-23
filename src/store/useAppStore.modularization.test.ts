@@ -48,6 +48,7 @@ const currentPersistedKeys = [
   'user',
   'githubToken',
   'isAuthenticated',
+  'accountWorkspaces',
   'repositories',
   'lastSync',
   'gists',
@@ -79,6 +80,7 @@ const currentPersistedKeys = [
   'categoryMatchMode',
   'defaultCategoryOverrides',
   'assetFilters',
+  'repositoryCardFields',
   'theme',
   'themePreset',
   'currentView',
@@ -112,6 +114,10 @@ const currentPersistedKeys = [
   'discoverySortBy',
   'discoverySortOrder',
   'discoverySelectedTopic',
+  'weeklyOnlyCollected',
+  'xTweetFollows',
+  'xTweetAuthRevision',
+  'telegramFollows',
   'proxyConfig',
   'rpcDownloadConfig',
   'routeMode',
@@ -167,7 +173,7 @@ describe('PR-07 Store modularization compatibility', () => {
       rpcDownloadConfig: { enabled: true, host: 'rpc.example.com', port: 6800, secret: 'rpc-secret' },
     });
 
-    expect(options.version).toBe(13);
+    expect(options.version).toBe(16);
     expect(Object.keys(persisted)).toEqual(currentPersistedKeys);
     expect(persisted.analyzingGistIds).toEqual(['gist-1']);
     expect(persisted.proxyConfig).toMatchObject({ password: 'proxy-password' });
@@ -240,8 +246,8 @@ describe('PR-07 Store modularization compatibility', () => {
     const normalized = actualStore.normalizePersistedState(snapshot, actualStore.useAppStore.getInitialState());
 
     expect(normalized.analyzingGistIds).toEqual(new Set());
-    expect(normalized.discoveryRepos).toEqual({ trending: [], 'hot-release': [], 'most-popular': [], topic: [], search: [] });
-    expect(normalized.discoveryIsLoading).toEqual({ trending: false, 'hot-release': false, 'most-popular': false, topic: false, search: false });
+    expect(normalized.discoveryRepos).toEqual({ trending: [], 'hot-release': [], 'most-popular': [], topic: [], 'x-tweet': [], telegram: [], weekly: [], search: [], 'code-search': [] });
+    expect(normalized.discoveryIsLoading).toEqual({ trending: false, 'hot-release': false, 'most-popular': false, topic: false, 'x-tweet': false, telegram: false, weekly: false, search: false, 'code-search': false });
     expect(normalized.repositories?.[0]).toMatchObject({
       has_fetched_releases: true,
       last_release_fetch_time: '2026-02-01T00:00:00.000Z',

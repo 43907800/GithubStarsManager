@@ -1,3 +1,9 @@
+
+
+
+
+import { makeT, useT } from '../../../i18n/useT';
+import type { AppLanguage } from '../../../i18n/languages';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -9,24 +15,22 @@ import type {
   ToolEvidence,
 } from '../../../types/repositoryChat';
 import { runRepositoryChatTurn } from '../../../services/repositoryChatRunner';
-import { repositoryChatSessionRepository } from '../repositories/sessionRepository';
+import { repositoryChatStorage } from '../../../services/repositoryChatStorage';
+import { DEFAULT_CHAT_TITLES } from './useRepositoryChatSessions';
 
 const createId = (prefix: string): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`;
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
-export const repositoryChatErrorMessage = (unknownError: unknown, language: 'zh' | 'en'): string => {
+export const repositoryChatErrorMessage = (unknownError: unknown, language: AppLanguage): string => {
+  const t = makeT(language, 'chat');
   const rawMessage = unknownError instanceof Error ? unknownError.message : String(unknownError ?? '');
   const isTemporaryServiceFailure = /\b(?:5\d\d|429)\b|upstream|timeout|timed?\s*out|network|fetch|do_request_failed|temporarily unavailable/i.test(rawMessage);
   if (isTemporaryServiceFailure) {
-    return language === 'zh'
-      ? 'AI 服务暂时不可用。问题和已读取的仓库证据已保留，请稍后重试。'
-      : 'The AI service is temporarily unavailable. Your question and retrieved repository evidence have been preserved; please retry shortly.';
+    return t('useRepositoryChat.the-ai-service-is-temporarily-unavailable-your-q');
   }
-  return language === 'zh'
-    ? '回答生成失败。请检查 AI 配置后重试。'
-    : 'Answer generation failed. Check the AI configuration and retry.';
+  return t('useRepositoryChat.answer-generation-failed-check-the-ai-configurat');
 };
 
 interface UseRepositoryChatOptions {
@@ -44,6 +48,7 @@ export const useRepositoryChat = ({
   onMessagesChange,
   onSessionChange,
 }: UseRepositoryChatOptions) => {
+  const t = useT('chat');
   const {
     language,
     githubToken,
@@ -85,7 +90,7 @@ export const useRepositoryChat = ({
       return;
     }
     let active = true;
-    void repositoryChatSessionRepository.listEvidence(evidenceIds).then((evidences) => {
+    void repositoryChatStorage.listEvidence(evidenceIds).then((evidences) => {
       if (!active) return;
       setEvidenceById(Object.fromEntries(evidences.map((evidence) => [evidence.id, evidence])));
     });
@@ -98,7 +103,7 @@ export const useRepositoryChat = ({
       return;
     }
     let active = true;
-    void repositoryChatSessionRepository.listToolEvents(session.id).then((events) => {
+    void repositoryChatStorage.listToolEvents(session.id).then((events) => {
       if (active) setToolEvents(events);
     });
     return () => { active = false; };
@@ -107,11 +112,11 @@ export const useRepositoryChat = ({
   const resolvedConfigId = repositoryChatSettings.chatConfigId ?? activeAIConfig;
   const aiConfig = aiConfigs.find((config) => config.id === resolvedConfigId) ?? null;
   const unavailableReason = !repositoryChatSettings.enabled
-    ? (language === 'zh' ? '仓库问答已在 AI 配置中关闭。' : 'Repository chat is disabled in AI settings.')
+    ? (t('useRepositoryChat.repository-chat-is-disabled-in-ai-settings'))
     : !githubToken
-      ? (language === 'zh' ? '请先配置 GitHub token。' : 'Configure a GitHub token first.')
+      ? (t('useRepositoryChat.configure-a-github-token-first'))
       : !aiConfig
-        ? (language === 'zh' ? '请先配置有效的活动 AI 服务。' : 'Configure an active AI service first.')
+        ? (t('useRepositoryChat.configure-an-active-ai-service-first'))
         : null;
 
   const persistToolEvent = useCallback(async (event: Omit<RepositoryChatToolEvent, 'id' | 'sessionId' | 'messageId' | 'createdAt'> & { toolName: string }, activeMessageId: string) => {
@@ -144,7 +149,7 @@ export const useRepositoryChat = ({
     // one event ID so an older delayed running write cannot overwrite success.
     const previousWrite = toolEventWriteChainsRef.current.get(toolEvent.id) ?? Promise.resolve();
     const write = previousWrite.catch(() => undefined).then(async () => {
-      await repositoryChatSessionRepository.saveToolEvent(toolEvent);
+      await repositoryChatStorage.saveToolEvent(toolEvent);
     });
     toolEventWriteChainsRef.current.set(toolEvent.id, write);
     try {
@@ -200,8 +205,8 @@ export const useRepositoryChat = ({
     let streamedContent = '';
     try {
       await Promise.all([
-        repositoryChatSessionRepository.saveMessage(userMessage),
-        repositoryChatSessionRepository.saveMessage(assistantMessage),
+        repositoryChatStorage.saveMessage(userMessage),
+        repositoryChatStorage.saveMessage(assistantMessage),
       ]);
       let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
       const flushStreamedContent = (content: string) => {
@@ -253,18 +258,18 @@ export const useRepositoryChat = ({
           globalThis.clearTimeout(streamFlushTimer);
           streamFlushTimer = null;
         }
-        await Promise.all(result.evidences.map((evidence) => repositoryChatSessionRepository.saveEvidence(evidence)));
+        await Promise.all(result.evidences.map((evidence) => repositoryChatStorage.saveEvidence(evidence)));
         const completedAssistant: RepositoryChatMessage = {
           ...assistantMessage,
           content: result.content,
           status: 'complete',
           evidenceIds: result.evidences.map((evidence) => evidence.id),
         };
-        await repositoryChatSessionRepository.saveMessage(completedAssistant);
+        await repositoryChatStorage.saveMessage(completedAssistant);
         onMessagesChange([...baseMessages, userMessage, completedAssistant]);
         await onSessionChange({
           ...session,
-          title: session.title === (language === 'zh' ? '新对话' : 'New conversation')
+          title: DEFAULT_CHAT_TITLES.has(session.title)
             ? normalizedQuestion.slice(0, 72)
             : session.title,
           modelConfigId: aiConfig.id,
@@ -279,15 +284,15 @@ export const useRepositoryChat = ({
       const failedAssistant: RepositoryChatMessage = {
         ...assistantMessage,
         content: aborted
-          ? (streamedContent || (language === 'zh' ? '已停止生成。' : 'Generation stopped.'))
-          : (language === 'zh' ? '回答生成失败，请重试。' : 'Answer generation failed. Please retry.'),
+          ? (streamedContent || (t('useRepositoryChat.generation-stopped')))
+          : (t('useRepositoryChat.answer-generation-failed-please-retry')),
         status: aborted ? 'aborted' : 'error',
       };
       // The visible transcript must always settle, even if the persistence backend
       // is unavailable and cannot record the terminal failure state.
       onMessagesChange([...baseMessages, userMessage, failedAssistant]);
       try {
-        await repositoryChatSessionRepository.saveMessage(failedAssistant);
+        await repositoryChatStorage.saveMessage(failedAssistant);
       } catch {
         // The original error is already represented in the transcript and banner.
       }
@@ -296,7 +301,7 @@ export const useRepositoryChat = ({
       abortControllerRef.current = null;
       setIsSending(false);
     }
-  }, [aiConfig, githubToken, isSending, language, messages, onMessagesChange, onSessionChange, persistToolEvent, repository, repositoryChatSettings.agentBudget, repositoryChatSettings.enableAgentToolLoop, repositoryChatSettings.maxToolsPerTurn, repositoryChatSettings.streamingMode, repositoryChatSettings.taskDepth, session, unavailableReason]);
+  }, [aiConfig, githubToken, isSending, language, messages, onMessagesChange, onSessionChange, persistToolEvent, repository, repositoryChatSettings.agentBudget, repositoryChatSettings.enableAgentToolLoop, repositoryChatSettings.maxToolsPerTurn, repositoryChatSettings.streamingMode, repositoryChatSettings.taskDepth, session, unavailableReason, t]);
 
   const stop = useCallback(() => {
     abortControllerRef.current?.abort();
@@ -312,7 +317,7 @@ export const useRepositoryChat = ({
     const baseMessages = messages.slice(0, messages.length - 2);
     retryInFlightRef.current = true;
     try {
-      await repositoryChatSessionRepository.permanentlyDeleteMessages([lastUser.id, lastAssistant.id]);
+      await repositoryChatStorage.permanentlyDeleteMessages([lastUser.id, lastAssistant.id]);
       onMessagesChange(baseMessages);
       await send(lastUser.content, baseMessages, true);
     } finally {

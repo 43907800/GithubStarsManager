@@ -1,3 +1,10 @@
+
+
+
+
+import { discoveryChannelName, discoveryPlatformName } from '../i18n/discoveryNames';
+import { useT } from '../i18n/useT';
+import type { AppLanguage } from '../i18n/languages';
 import { Button } from './ui/button';
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import {
@@ -13,16 +20,21 @@ import {
   ChevronDown,
   Globe,
   X,
-  Calendar
+  Calendar,
+  Newspaper,
+  Users
 } from 'lucide-react';
-import { SiAndroid, SiApple, SiLinux } from '@icons-pack/react-simple-icons';
+import { SiAndroid, SiApple, SiLinux, SiX, SiTelegram } from '@icons-pack/react-simple-icons';
 import { SiWindows } from './SiWindows';
 import { useAppStore } from '../store/useAppStore';
 import { useDiscoveryActions } from '../features/discovery/hooks/useDiscoveryActions';
 import { DiscoverySidebar } from './DiscoverySidebar';
 import { SubscriptionRepoCard } from './SubscriptionRepoCard';
+import { CodeSearchView } from './CodeSearchView';
 import { SortAlgorithmTooltip } from './SortAlgorithmTooltip';
 import { ScrollToBottom } from './ScrollToBottom';
+import { XTweetSettingsModal } from './XTweetSettingsModal';
+import { TelegramSettingsModal } from './TelegramSettingsModal';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from './ui/dropdown-menu';
@@ -42,6 +54,9 @@ const discoveryChannelIconMap: Record<DiscoveryChannelIcon, React.ReactNode> = {
   rocket: <Rocket className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />,
   star: <Crown className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />,
   tag: <Tag className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />,
+  tweet: <SiX className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />,
+  telegram: <SiTelegram className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />,
+  weekly: <Newspaper className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />,
   search: <Search className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />,
 };
 
@@ -66,6 +81,21 @@ const discoveryChannelStyleMap: Record<DiscoveryChannelIcon, { gradient: string;
     shadow: 'shadow-subtle',
     largeIcon: <Tag className="w-9 h-9 text-muted-foreground dark:text-foreground" />,
   },
+  tweet: {
+    gradient: 'from-muted to-muted/60 dark:from-muted/40 dark:to-muted/20',
+    shadow: 'shadow-subtle',
+    largeIcon: <SiX className="w-9 h-9 text-muted-foreground dark:text-foreground" />,
+  },
+  telegram: {
+    gradient: 'from-muted to-muted/60 dark:from-muted/40 dark:to-muted/20',
+    shadow: 'shadow-subtle',
+    largeIcon: <SiTelegram className="w-9 h-9 text-muted-foreground dark:text-foreground" />,
+  },
+  weekly: {
+    gradient: 'from-muted to-muted/60 dark:from-muted/40 dark:to-muted/20',
+    shadow: 'shadow-subtle',
+    largeIcon: <Newspaper className="w-9 h-9 text-muted-foreground dark:text-foreground" />,
+  },
   search: {
     gradient: 'from-muted to-muted/60 dark:from-muted/40 dark:to-muted/20',
     shadow: 'shadow-subtle',
@@ -77,7 +107,7 @@ interface MobileTabNavProps {
   channels: { id: DiscoveryChannelId; name: string; nameEn: string; icon: React.ReactNode }[];
   selectedChannel: DiscoveryChannelId;
   onChannelSelect: (channel: DiscoveryChannelId) => void;
-  language: 'zh' | 'en';
+  language: AppLanguage;
 }
 
 const MobileTabNav: React.FC<MobileTabNavProps> = ({ 
@@ -203,7 +233,7 @@ const MobileTabNav: React.FC<MobileTabNavProps> = ({
           >
             <span className="flex items-center gap-1.5 whitespace-nowrap">
               {channel.icon}
-              {language === 'zh' ? channel.name : channel.nameEn}
+              {discoveryChannelName(channel, language)}
             </span>
           </Button>
         ))}
@@ -224,10 +254,11 @@ const MobileTabNav: React.FC<MobileTabNavProps> = ({
 interface PlatformFilterProps {
   platform: DiscoveryPlatform;
   onPlatformChange: (platform: DiscoveryPlatform) => void;
-  language: 'zh' | 'en';
+  language: AppLanguage;
 }
 
 const PlatformFilter: React.FC<PlatformFilterProps> = ({ platform, onPlatformChange, language }) => {
+    const t = useT('discovery');
   const platforms: { id: DiscoveryPlatform; name: string; nameEn: string; icon: React.ReactNode }[] = [
     { id: 'All', name: '全部平台', nameEn: 'All Platforms', icon: <Globe className="w-4 h-4" /> },
     { id: 'Android', name: 'Android', nameEn: 'Android', icon: <SiAndroid className="w-4 h-4" /> },
@@ -244,13 +275,11 @@ const PlatformFilter: React.FC<PlatformFilterProps> = ({ platform, onPlatformCha
         <Button
           type="button"
           variant="ghost"
-          aria-label={language === 'zh'
-            ? `平台筛选：${selectedPlatform?.name ?? '全部平台'}`
-            : `Platform filter: ${selectedPlatform?.nameEn ?? 'All Platforms'}`}
+          aria-label={t('discoveryView.platform-filter-v1', { v1: discoveryPlatformName(selectedPlatform ?? { id: 'All', name: '全部平台', nameEn: 'All Platforms' }, language) })}
           className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium bg-muted text-foreground dark:bg-muted/40 dark:text-muted-foreground hover:bg-accent dark:hover:bg-accent transition-colors"
         >
           <Filter className="h-4 w-4" />
-          <span className="hidden xl:inline">{language === 'zh' ? selectedPlatform?.name : selectedPlatform?.nameEn}</span>
+          <span className="hidden xl:inline">{selectedPlatform ? discoveryPlatformName(selectedPlatform, language) : ''}</span>
           <ChevronDown className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
@@ -263,7 +292,7 @@ const PlatformFilter: React.FC<PlatformFilterProps> = ({ platform, onPlatformCha
               className={platform === p.id ? 'bg-accent text-accent-foreground' : ''}
             >
               {p.icon}
-              <span>{language === 'zh' ? p.name : p.nameEn}</span>
+              <span>{discoveryPlatformName(p, language)}</span>
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
@@ -334,7 +363,7 @@ interface LoadMoreButtonProps {
   isLoading: boolean;
   hasMore: boolean;
   totalCount: number;
-  language: 'zh' | 'en';
+  language: AppLanguage;
 }
 
 const LoadMoreButton: React.FC<LoadMoreButtonProps> = ({
@@ -342,20 +371,19 @@ const LoadMoreButton: React.FC<LoadMoreButtonProps> = ({
   isLoading,
   hasMore,
   totalCount,
-  language
 }) => {
-  const t = (zh: string, en: string) => language === 'zh' ? zh : en;
+  const t = useT('discovery');
 
   if (!hasMore) {
     return (
       <div className="flex flex-col items-center gap-2 py-8">
         <div className="flex items-center gap-2 text-muted-foreground dark:text-muted-foreground">
           <div className="w-8 h-px bg-muted dark:bg-muted/40" />
-          <span className="text-sm">{t('已加载全部', 'All loaded')}</span>
+          <span className="text-sm">{t('discoveryView.all-loaded')}</span>
           <div className="w-8 h-px bg-muted dark:bg-muted/40" />
         </div>
         <span className="text-xs text-muted-foreground dark:text-muted-foreground">
-          {t(`共 ${totalCount} 个项目`, `Total ${totalCount} items`)}
+          {t('discoveryView.total-totalcount-items', { totalCount: totalCount })}
         </span>
       </div>
     );
@@ -371,12 +399,12 @@ const LoadMoreButton: React.FC<LoadMoreButtonProps> = ({
         {isLoading ? (
           <>
             <Loader2 className="w-4 h-4 animate-spin text-primary" />
-            <span>{t('加载中…', 'Loading…')}</span>
+            <span>{t('discoveryView.loading')}</span>
           </>
         ) : (
           <>
             <RefreshCw className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />
-            <span>{t('加载更多', 'Load More')}</span>
+            <span>{t('discoveryView.load-more')}</span>
           </>
         )}
       </Button>
@@ -388,22 +416,19 @@ const LoadMoreButton: React.FC<LoadMoreButtonProps> = ({
 interface DataStatsProps {
   currentCount: number;
   totalCount: number;
-  language: 'zh' | 'en';
+  language: AppLanguage;
 }
 
-const DataStats: React.FC<DataStatsProps> = ({ currentCount, totalCount, language }) => {
-  const t = (zh: string, en: string) => language === 'zh' ? zh : en;
+const DataStats: React.FC<DataStatsProps> = ({ currentCount, totalCount }) => {
+  const t = useT('discovery');
   
   return (
     <div className="flex items-center gap-2 text-sm text-muted-foreground dark:text-muted-foreground">
       <div className="w-1.5 h-1.5 rounded-full bg-primary" />
       <span>
-        {t('共', 'Total')} <strong className="text-foreground dark:text-foreground">{currentCount}</strong> {t('个项目', 'items')}
-        {totalCount > 0 && currentCount < totalCount && (
-          <span className="text-muted-foreground dark:text-muted-foreground">
-            {' '}{t('（总计', '(total')} {totalCount} {t('个）', 'items)')}
-          </span>
-        )}
+        {totalCount > 0 && currentCount < totalCount
+          ? t('discoveryView.items-count-with-total', { currentCount, totalCount })
+          : t('discoveryView.items-count', { currentCount })}
       </span>
     </div>
   );
@@ -441,6 +466,15 @@ export const DiscoveryView: React.FC = React.memo(() => {
     discoveryTotalCount,
     trendingTimeRange,
     setTrendingTimeRange,
+    weeklyOnlyCollected,
+    setWeeklyOnlyCollected,
+    weeklySyncStatus,
+    xTweetFollows,
+    xTweetAuth,
+    xTweetAuthRevision,
+    xTweetSyncStatus,
+    telegramFollows,
+    telegramSyncStatus,
     t,
     isAnalyzing,
     refreshChannel,
@@ -451,6 +485,10 @@ export const DiscoveryView: React.FC = React.memo(() => {
   const [searchInput, setSearchInput] = useState(discoverySearchQuery);
   
   const sidebarRef = useRef<HTMLDivElement>(null);
+  // X 推文频道：关注列表设置弹窗
+  const [tweetSettingsOpen, setTweetSettingsOpen] = useState(false);
+  // Telegram 频道：关注频道设置弹窗
+  const [telegramSettingsOpen, setTelegramSettingsOpen] = useState(false);
   // 工具栏显示状态
   const [isToolbarVisible, setIsToolbarVisible] = useState(true);
   const lastScrollY = useRef(0);
@@ -488,6 +526,24 @@ export const DiscoveryView: React.FC = React.memo(() => {
   const currentChannelIcon = currentChannel?.icon || 'trending';
   const currentChannelStyle = discoveryChannelStyleMap[currentChannelIcon] || discoveryChannelStyleMap.trending;
   const currentChannelIconNode = discoveryChannelIconMap[currentChannelIcon] || discoveryChannelIconMap.trending;
+  // 周刊同步/补全进度文案（工具栏与空态加载两处共用）
+  const weeklyStatusText = weeklySyncStatus
+    ? (weeklySyncStatus.phase === 'syncing'
+      ? t('discoveryView.syncing-weekly-submissions-v1-scanned', { v1: weeklySyncStatus.current })
+      : t('discoveryView.fetching-repo-details-v1-v2', { v1: weeklySyncStatus.current, v2: weeklySyncStatus.total }))
+    : null;
+  // X 推文同步/补全进度文案
+  const xTweetStatusText = xTweetSyncStatus
+    ? (xTweetSyncStatus.phase === 'syncing'
+      ? t('discoveryView.fetching-timelines-v1-v2', { v1: xTweetSyncStatus.current, v2: xTweetSyncStatus.total })
+      : t('discoveryView.fetching-repo-details-v1-v2', { v1: xTweetSyncStatus.current, v2: xTweetSyncStatus.total }))
+    : null;
+  // Telegram 频道同步/补全进度文案
+  const telegramStatusText = telegramSyncStatus
+    ? (telegramSyncStatus.phase === 'syncing'
+      ? t('discoveryView.fetching-channel-messages-v1-v2', { v1: telegramSyncStatus.current, v2: telegramSyncStatus.total })
+      : t('discoveryView.fetching-repo-details-v1-v2', { v1: telegramSyncStatus.current, v2: telegramSyncStatus.total }))
+    : null;
 
 
 
@@ -497,10 +553,10 @@ export const DiscoveryView: React.FC = React.memo(() => {
     const savedPosition = discoveryScrollPositionsRef.current[selectedDiscoveryChannel] || 0;
     window.scrollTo({ top: savedPosition, behavior: 'auto' });
     
-    // 取消持久化后，首次打开或切换到空频道时自动加载
+    // 取消持久化后，首次打开或切换到空频道时自动加载（代码搜索走本地实时请求，不参与自动拉取）
     const hasRepos = useAppStore.getState().discoveryRepos[selectedDiscoveryChannel]?.length > 0;
     const isLoading = useAppStore.getState().discoveryIsLoading[selectedDiscoveryChannel];
-    if (selectedDiscoveryChannel !== 'topic' && !hasRepos && !isLoading && autoFetchChannelRef.current !== selectedDiscoveryChannel) {
+    if (selectedDiscoveryChannel !== 'topic' && selectedDiscoveryChannel !== 'code-search' && !hasRepos && !isLoading && autoFetchChannelRef.current !== selectedDiscoveryChannel) {
       autoFetchChannelRef.current = selectedDiscoveryChannel;
       refreshChannel(selectedDiscoveryChannel, 1, false);
     }
@@ -512,6 +568,42 @@ export const DiscoveryView: React.FC = React.memo(() => {
       refreshChannel('trending', 1, false);
     }
   }, [trendingTimeRange, selectedDiscoveryChannel, refreshChannel]);
+
+  // 周刊收录过滤器切换时重建列表：只在偏好值真正变化时触发（挂载/切频道不触发，
+  // 避免与空频道自动加载 effect 双重调用导致增量同步被中止重启）
+  const prevWeeklyOnlyCollectedRef = useRef(weeklyOnlyCollected);
+  useEffect(() => {
+    if (prevWeeklyOnlyCollectedRef.current === weeklyOnlyCollected) return;
+    prevWeeklyOnlyCollectedRef.current = weeklyOnlyCollected;
+    if (selectedDiscoveryChannel === 'weekly') {
+      refreshChannel('weekly', 1, false);
+    }
+  }, [weeklyOnlyCollected, selectedDiscoveryChannel, refreshChannel]);
+
+  // X 推文关注列表/鉴权变化时重建列表：只在集合真正变化时触发（挂载/切频道
+  // 不触发，避免与空频道自动加载 effect 双重调用导致同步被中止重启）
+  // 修订号区分"不同 Cookie 之间的切换"，布尔值做不到
+  const xTweetFollowsSignature = `${xTweetFollows.map(follow => follow.handle.toLowerCase()).sort().join(',')}|${xTweetAuth !== null}|${xTweetAuthRevision ?? 0}`;
+  const prevXTweetFollowsRef = useRef(xTweetFollowsSignature);
+  useEffect(() => {
+    if (prevXTweetFollowsRef.current === xTweetFollowsSignature) return;
+    prevXTweetFollowsRef.current = xTweetFollowsSignature;
+    if (selectedDiscoveryChannel === 'x-tweet') {
+      refreshChannel('x-tweet', 1, false);
+    }
+  }, [xTweetFollowsSignature, selectedDiscoveryChannel, refreshChannel]);
+
+  // Telegram 关注列表变化时重建列表：只在关注集真正变化时触发（挂载/切频道
+  // 不触发，避免与空频道自动加载 effect 双重调用导致同步被中止重启）
+  const telegramFollowsSignature = telegramFollows.map(follow => follow.channel.toLowerCase()).sort().join(',');
+  const prevTelegramFollowsRef = useRef(telegramFollowsSignature);
+  useEffect(() => {
+    if (prevTelegramFollowsRef.current === telegramFollowsSignature) return;
+    prevTelegramFollowsRef.current = telegramFollowsSignature;
+    if (selectedDiscoveryChannel === 'telegram') {
+      refreshChannel('telegram', 1, false);
+    }
+  }, [telegramFollowsSignature, selectedDiscoveryChannel, refreshChannel]);
 
   // 主题改变时刷新数据
   useEffect(() => {
@@ -528,10 +620,10 @@ export const DiscoveryView: React.FC = React.memo(() => {
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffMin = Math.floor(diffMs / (1000 * 60));
-    if (diffMin < 1) return t('刚刚', 'Just now');
-    if (diffMin < 60) return t(`${diffMin}分钟前`, `${diffMin}m ago`);
+    if (diffMin < 1) return t('discoveryView.just-now');
+    if (diffMin < 60) return t('discoveryView.diffmin-m-ago', { diffMin: diffMin });
     const diffHours = Math.floor(diffMin / 60);
-    if (diffHours < 24) return t(`${diffHours}小时前`, `${diffHours}h ago`);
+    if (diffHours < 24) return t('discoveryView.diffhours-h-ago', { diffHours: diffHours });
     return date.toLocaleDateString();
   }, [t]);
 
@@ -602,7 +694,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
   ]);
 
   const refreshAll = useCallback(async () => {
-    const enabledChannels = safeDiscoveryChannels.filter(ch => ch.enabled);
+    const enabledChannels = safeDiscoveryChannels.filter(ch => ch.enabled && ch.id !== 'code-search');
     for (const channel of enabledChannels) {
       await refreshChannel(channel.id, 1, false);
     }
@@ -681,15 +773,16 @@ export const DiscoveryView: React.FC = React.memo(() => {
                     <h2 className="text-base sm:text-lg font-bold text-foreground dark:text-foreground truncate leading-tight">
                       {language === 'zh'
                         ? currentChannel?.name
-                        : currentChannel?.nameEn}
+                        : discoveryChannelName(currentChannel ?? { id: 'search', name: '仓库搜索', nameEn: 'Repo Search' }, language)}
                     </h2>
                     {currentLastRefresh && (
                       <p className="hidden sm:block text-xs text-muted-foreground dark:text-muted-foreground">
-                        {t('更新于', 'Updated')} {formatLastRefresh(currentLastRefresh)}
+                        {t('discoveryView.updated')} {formatLastRefresh(currentLastRefresh)}
                       </p>
                     )}
                   </div>
                 </div>
+                {selectedDiscoveryChannel !== 'code-search' && (
                 <div className="relative group/refresh shrink-0">
                   <Button
                     variant="ghost"
@@ -697,61 +790,121 @@ export const DiscoveryView: React.FC = React.memo(() => {
                     onClick={() => refreshChannel(selectedDiscoveryChannel, 1, false)}
                     disabled={currentIsLoading || isAnalyzing}
                     className="p-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={t('刷新', 'Refresh')}
+                    title={t('discoveryView.refresh')}
                   >
                     <RefreshCw className={`w-4 h-4 ${currentIsLoading ? 'animate-spin' : ''}`} />
                   </Button>
                   {selectedDiscoveryChannel === 'hot-release' && (
                     <div className="absolute top-full mt-2 right-0 z-50 opacity-0 group-hover/refresh:opacity-100 translate-y-1 group-hover/refresh:translate-y-0 transition-all duration-200 pointer-events-none">
                       <div className="bg-popover text-popover-foreground border border-border text-xs rounded-lg px-3 py-2 whitespace-nowrap shadow-lg">
-                        {t('每次刷新都能看到不一样的内容', 'Each refresh shows different content')}
+                        {t('discoveryView.each-refresh-shows-different-content')}
                       </div>
                       <div className="absolute -top-1 right-3 w-2 h-2 bg-popover border-t border-l border-border rotate-45" />
                     </div>
                   )}
                 </div>
+                )}
               </div>
               
-              {/* 第二行：筛选和操作按钮 */}
+              {/* 第二行：筛选和操作按钮（代码搜索频道使用自有工具条，此处隐藏仓库维度控件） */}
+              {selectedDiscoveryChannel !== 'code-search' && (
               <div className="flex items-center gap-2 flex-wrap">
                 {selectedDiscoveryChannel === 'trending' && (
             <div className="flex items-center gap-1.5">
               <Calendar className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />
               <Select value={trendingTimeRange} onValueChange={(value) => setTrendingTimeRange(value as TrendingTimeRange)}>
-                <SelectTrigger aria-label={t('时间范围', 'Time range')} className="ui-field h-9 w-auto min-w-28 px-3 py-1.5 text-sm font-medium text-foreground dark:text-foreground"><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label={t('discoveryView.time-range')} className="ui-field h-9 w-auto min-w-28 px-3 py-1.5 text-sm font-medium text-foreground dark:text-foreground"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="daily">{t('今日', 'Today')}</SelectItem>
-                  <SelectItem value="weekly">{t('本周', 'This Week')}</SelectItem>
-                  <SelectItem value="monthly">{t('本月', 'This Month')}</SelectItem>
+                  <SelectItem value="daily">{t('discoveryView.today')}</SelectItem>
+                  <SelectItem value="weekly">{t('discoveryView.this-week')}</SelectItem>
+                  <SelectItem value="monthly">{t('discoveryView.this-month')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           )}
         {selectedDiscoveryChannel === 'topic' && (
                   <Select value={discoverySelectedTopic || 'all'} onValueChange={(value) => setDiscoverySelectedTopic(value === 'all' ? null : value as TopicCategory)}>
-                    <SelectTrigger aria-label={t('主题筛选', 'Topic filter')} className="ui-field h-9 w-auto min-w-28 px-3 py-1.5 text-sm font-medium text-foreground dark:text-foreground"><SelectValue placeholder={t('主题', 'Topic')} /></SelectTrigger>
+                    <SelectTrigger aria-label={t('discoveryView.topic-filter')} className="ui-field h-9 w-auto min-w-28 px-3 py-1.5 text-sm font-medium text-foreground dark:text-foreground"><SelectValue placeholder={t('discoveryView.topic')} /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="all">{t('主题', 'Topic')}</SelectItem>
-                      <SelectItem value="ai">{t('人工智能', 'AI')}</SelectItem>
-                      <SelectItem value="ml">{t('机器学习', 'ML')}</SelectItem>
-                      <SelectItem value="database">{t('数据库', 'DB')}</SelectItem>
-                      <SelectItem value="web">{t('Web开发', 'Web')}</SelectItem>
-                      <SelectItem value="mobile">{t('移动开发', 'Mobile')}</SelectItem>
-                      <SelectItem value="devtools">{t('开发工具', 'DevTools')}</SelectItem>
-                      <SelectItem value="security">{t('安全', 'Security')}</SelectItem>
-                      <SelectItem value="game">{t('游戏', 'Game')}</SelectItem>
+                      <SelectItem value="all">{t('discoveryView.topic')}</SelectItem>
+                      <SelectItem value="ai">{t('discoveryView.ai')}</SelectItem>
+                      <SelectItem value="ml">{t('discoveryView.ml')}</SelectItem>
+                      <SelectItem value="database">{t('discoveryView.db')}</SelectItem>
+                      <SelectItem value="web">{t('discoveryView.web')}</SelectItem>
+                      <SelectItem value="mobile">{t('discoveryView.mobile')}</SelectItem>
+                      <SelectItem value="devtools">{t('discoveryView.devtools')}</SelectItem>
+                      <SelectItem value="security">{t('discoveryView.security')}</SelectItem>
+                      <SelectItem value="game">{t('discoveryView.game')}</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
+                {selectedDiscoveryChannel === 'weekly' && (
+                  <button
+                    type="button"
+                    onClick={() => setWeeklyOnlyCollected(!weeklyOnlyCollected)}
+                    aria-pressed={weeklyOnlyCollected}
+                    className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium border transition-colors ${
+                      weeklyOnlyCollected
+                        ? 'bg-primary/10 text-primary border-primary/30 dark:text-primary'
+                        : 'bg-muted/50 text-muted-foreground border-transparent hover:bg-accent hover:text-accent-foreground'
+                    }`}
+                    title={t('discoveryView.only-show-submissions-included-in-the-weekly-iss')}
+                  >
+                    <Newspaper className="w-4 h-4" />
+                    {t('discoveryView.in-weekly')}
+                  </button>
+                )}
+                {selectedDiscoveryChannel === 'weekly' && weeklyStatusText && (
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground dark:text-muted-foreground" aria-live="polite">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    {weeklyStatusText}
+                  </span>
+                )}
+                {selectedDiscoveryChannel === 'x-tweet' && xTweetStatusText && (
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground dark:text-muted-foreground" aria-live="polite">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    {xTweetStatusText}
+                  </span>
+                )}
+                {selectedDiscoveryChannel === 'x-tweet' && (
+                  <button
+                    type="button"
+                    onClick={() => setTweetSettingsOpen(true)}
+                    className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium border transition-colors bg-muted/50 text-muted-foreground border-transparent hover:bg-accent hover:text-accent-foreground"
+                    title={t('discoveryView.manage-the-follow-list')}
+                  >
+                    <Users className="w-4 h-4" />
+                    {t('discoveryView.follow-list')}
+                  </button>
+                )}
+                {selectedDiscoveryChannel === 'telegram' && telegramStatusText && (
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground dark:text-muted-foreground" aria-live="polite">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    {telegramStatusText}
+                  </span>
+                )}
+                {selectedDiscoveryChannel === 'telegram' && (
+                  <button
+                    type="button"
+                    onClick={() => setTelegramSettingsOpen(true)}
+                    className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium border transition-colors bg-muted/50 text-muted-foreground border-transparent hover:bg-accent hover:text-accent-foreground"
+                    title={t('discoveryView.manage-the-channel-list')}
+                  >
+                    <Users className="w-4 h-4" />
+                    {t('discoveryView.channel-list')}
+                  </button>
+                )}
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <PlatformFilter 
-                    platform={discoveryPlatform} 
-                    onPlatformChange={setDiscoveryPlatform} 
+                  {selectedDiscoveryChannel !== 'weekly' && selectedDiscoveryChannel !== 'x-tweet' && selectedDiscoveryChannel !== 'telegram' && (
+                    <PlatformFilter
+                      platform={discoveryPlatform}
+                      onPlatformChange={setDiscoveryPlatform}
+                      language={language}
+                    />
+                  )}
+                  <SortAlgorithmTooltip
+                    channelId={selectedDiscoveryChannel}
                     language={language}
-                  />
-                  <SortAlgorithmTooltip 
-                    channelId={selectedDiscoveryChannel} 
-                    language={language} 
                   />
                   {isAnalyzingThisChannel ? (
                     <div className="flex items-center gap-1">
@@ -778,8 +931,8 @@ export const DiscoveryView: React.FC = React.memo(() => {
                         variant="ghost"
                         size="icon"
                         onClick={handleAbortAnalysis}
-                        aria-label={t('停止分析', 'Stop analysis')}
-                        title={t('停止', 'Stop')}
+                        aria-label={t('discoveryView.stop-analysis')}
+                        title={t('discoveryView.stop')}
                         className="h-8 w-8"
                       >
                         <X className="w-4 h-4" />
@@ -792,10 +945,10 @@ export const DiscoveryView: React.FC = React.memo(() => {
                       onClick={handleAnalyzePage}
                       disabled={isAnalyzing || currentIsLoading}
                       className="h-9 shrink-0 gap-1.5 px-3 py-1.5 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                      title={t('AI分析', 'Analyze with AI')}
+                      title={t('discoveryView.analyze-with-ai')}
                     >
                       <Bot className="w-4 h-4" />
-                      <span className="hidden sm:inline">{t('AI分析', 'AI Analyze')}</span>
+                      <span className="hidden sm:inline">{t('discoveryView.ai-analyze')}</span>
                     </Button>
                   )}
                   <DataStats
@@ -805,14 +958,18 @@ export const DiscoveryView: React.FC = React.memo(() => {
                   />
                 </div>
               </div>
+              )}
             </div>
           </div>
 
           {/* 内容区域 */}
-          <div 
+          <div
             ref={scrollContainerRef}
-            className={`flex-1 overflow-y-auto space-y-4 pr-2 ${isDesktopSafeMode ? 'bg-card dark:bg-card' : ''}`}
+            className="flex-1 overflow-y-auto space-y-4 pr-2"
           >
+            {selectedDiscoveryChannel === 'code-search' && <CodeSearchView />}
+            {selectedDiscoveryChannel !== 'code-search' && (
+            <>
             {selectedDiscoveryChannel === 'search' && (
               <div className={isDesktopSafeMode
                 ? 'ui-toolbar p-4 space-y-4'
@@ -822,29 +979,29 @@ export const DiscoveryView: React.FC = React.memo(() => {
                     <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground dark:text-muted-foreground" />
                     <Input
                       type="text"
-                      aria-label={t('搜索仓库', 'Search repositories')}
+                      aria-label={t('discoveryView.search-repositories')}
                       value={searchInput}
                       onChange={(e) => setSearchInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                      placeholder={t('搜索仓库…', 'Search repositories…')}
+                      placeholder={t('discoveryView.search-repositories-2')}
                       className="ui-field h-auto w-full py-2.5 pl-10 pr-4 text-foreground dark:text-foreground" />
                   </div>
                   <Button
                     onClick={handleSearch}
-                    aria-label={t('搜索', 'Search')}
+                    aria-label={t('discoveryView.search')}
                     disabled={!searchInput.trim() || currentIsLoading}
                     className="ui-button-primary px-5 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 font-medium"
                   >
                     <Search className="w-4 h-4" />
-                    <span className="hidden sm:inline">{t('搜索', 'Search')}</span>
+                    <span className="hidden sm:inline">{t('discoveryView.search')}</span>
                   </Button>
                 </div>
                 
                 <div className="flex flex-wrap gap-2.5">
                   <Select value={discoveryLanguage} onValueChange={(value) => setDiscoveryLanguage(value as ProgrammingLanguage)}>
-                    <SelectTrigger aria-label={t('编程语言', 'Programming language')} className="ui-field h-9 w-auto min-w-32 px-3 py-1.5 text-sm font-medium text-foreground dark:text-foreground"><SelectValue /></SelectTrigger>
+                    <SelectTrigger aria-label={t('discoveryView.programming-language')} className="ui-field h-9 w-auto min-w-32 px-3 py-1.5 text-sm font-medium text-foreground dark:text-foreground"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="All">{t('所有语言', 'All Languages')}</SelectItem>
+                      <SelectItem value="All">{t('discoveryView.all-languages')}</SelectItem>
                       <SelectItem value="JavaScript">JavaScript</SelectItem>
                       <SelectItem value="TypeScript">TypeScript</SelectItem>
                       <SelectItem value="Python">Python</SelectItem>
@@ -865,21 +1022,21 @@ export const DiscoveryView: React.FC = React.memo(() => {
                   <CustomSelect
                     value={discoverySortBy}
                     onChange={(value) => setDiscoverySortBy(value as SortBy)}
-                    ariaLabel={t('发现排序字段', 'Discovery sort field')}
+                    ariaLabel={t('discoveryView.discovery-sort-field')}
                     options={[
-                      { value: 'BestMatch', label: t('最佳匹配', 'Best Match') },
-                      { value: 'MostStars', label: t('最多Star', 'Most Stars') },
-                      { value: 'MostForks', label: t('最多Fork', 'Most Forks') },
+                      { value: 'BestMatch', label: t('discoveryView.best-match') },
+                      { value: 'MostStars', label: t('discoveryView.most-stars') },
+                      { value: 'MostForks', label: t('discoveryView.most-forks') },
                     ]}
                   />
 
                   <CustomSelect
                     value={discoverySortOrder}
                     onChange={(value) => setDiscoverySortOrder(value as SortOrder)}
-                    ariaLabel={t('发现排序顺序', 'Discovery sort order')}
+                    ariaLabel={t('discoveryView.discovery-sort-order')}
                     options={[
-                      { value: 'Descending', label: t('降序', 'Descending') },
-                      { value: 'Ascending', label: t('升序', 'Ascending') },
+                      { value: 'Descending', label: t('discoveryView.descending') },
+                      { value: 'Ascending', label: t('discoveryView.ascending') },
                     ]}
                   />
                 </div>
@@ -896,10 +1053,16 @@ export const DiscoveryView: React.FC = React.memo(() => {
                 </div>
                 <div className="text-center space-y-1.5">
                   <p className="text-foreground dark:text-muted-foreground font-medium text-sm">
-                    {t('正在获取数据…', 'Fetching data…')}
+                    {t('discoveryView.fetching-data')}
                   </p>
                   <p className="text-xs text-muted-foreground dark:text-muted-foreground">
-                    {t('GitHub API 响应中', 'Waiting for GitHub API response')}
+                    {selectedDiscoveryChannel === 'weekly' && weeklyStatusText
+                      ? weeklyStatusText
+                      : selectedDiscoveryChannel === 'x-tweet' && xTweetStatusText
+                      ? xTweetStatusText
+                      : selectedDiscoveryChannel === 'telegram' && telegramStatusText
+                      ? telegramStatusText
+                      : t('discoveryView.waiting-for-github-api-response')}
                   </p>
                 </div>
               </div>
@@ -920,12 +1083,127 @@ export const DiscoveryView: React.FC = React.memo(() => {
                     )}
                     <div className="space-y-2 max-w-xs">
                       <p className="text-muted-foreground dark:text-muted-foreground font-medium text-base">
-                        {t('搜索发现', 'Search & Discover')}
+                        {t('discoveryView.repo-search')}
                       </p>
                       <p className="text-sm text-muted-foreground dark:text-muted-foreground leading-relaxed">
-                        {t('输入关键字搜索 GitHub 仓库', 'Enter keywords to search GitHub repositories')}
+                        {t('discoveryView.enter-keywords-to-search-github-repositories')}
                       </p>
                     </div>
+                  </>
+                ) : selectedDiscoveryChannel === 'x-tweet' ? (
+                  <>
+                    {isDesktopSafeMode ? (
+                      <div className="w-16 h-16 rounded-2xl bg-muted dark:bg-card flex items-center justify-center text-muted-foreground dark:text-muted-foreground border border-border dark:border-border">
+                        {currentChannelIconNode}
+                      </div>
+                    ) : (
+                      <div className={`w-20 h-20 rounded-3xl bg-gradient-to-br ${currentChannelStyle.gradient} flex items-center justify-center shadow-md ${currentChannelStyle.shadow}`}>
+                        {currentChannelStyle.largeIcon}
+                      </div>
+                    )}
+                    <div className="space-y-2 max-w-xs">
+                      <p className="text-muted-foreground dark:text-muted-foreground font-medium text-base">
+                        {t('discoveryView.x-tweets')}
+                      </p>
+                      <p className="text-sm text-muted-foreground dark:text-muted-foreground leading-relaxed">
+                        {t('discoveryView.fetches-github-projects-from-followed-accounts-l')}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <Button
+                        variant="default"
+                        onClick={() => refreshChannel('x-tweet', 1, false)}
+                        disabled={currentIsLoading}
+                        className={isDesktopSafeMode
+                          ? 'flex items-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90'
+                          : 'flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90'}
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        {t('discoveryView.start-sync')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => setTweetSettingsOpen(true)}
+                        disabled={currentIsLoading}
+                        className="flex items-center gap-2 rounded-xl border border-border dark:border-border bg-card dark:bg-muted/40 px-6 py-2.5 text-sm font-medium text-foreground dark:text-foreground transition-colors hover:bg-accent dark:hover:bg-accent"
+                      >
+                        <Users className="w-4 h-4" />
+                        {t('discoveryView.follow-list')}
+                      </Button>
+                    </div>
+                  </>
+                ) : selectedDiscoveryChannel === 'telegram' ? (
+                  <>
+                    {isDesktopSafeMode ? (
+                      <div className="w-16 h-16 rounded-2xl bg-muted dark:bg-card flex items-center justify-center text-muted-foreground dark:text-muted-foreground border border-border dark:border-border">
+                        {currentChannelIconNode}
+                      </div>
+                    ) : (
+                      <div className={`w-20 h-20 rounded-3xl bg-gradient-to-br ${currentChannelStyle.gradient} flex items-center justify-center shadow-md ${currentChannelStyle.shadow}`}>
+                        {currentChannelStyle.largeIcon}
+                      </div>
+                    )}
+                    <div className="space-y-2 max-w-xs">
+                      <p className="text-muted-foreground dark:text-muted-foreground font-medium text-base">
+                        {t('discoveryView.telegram-channels')}
+                      </p>
+                      <p className="text-sm text-muted-foreground dark:text-muted-foreground leading-relaxed">
+                        {t('discoveryView.fetches-github-projects-from-followed-channels-m')}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <Button
+                        variant="default"
+                        onClick={() => refreshChannel('telegram', 1, false)}
+                        disabled={currentIsLoading}
+                        className={isDesktopSafeMode
+                          ? 'flex items-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90'
+                          : 'flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90'}
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        {t('discoveryView.start-sync')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => setTelegramSettingsOpen(true)}
+                        disabled={currentIsLoading}
+                        className="flex items-center gap-2 rounded-xl border border-border dark:border-border bg-card dark:bg-muted/40 px-6 py-2.5 text-sm font-medium text-foreground dark:text-foreground transition-colors hover:bg-accent dark:hover:bg-accent"
+                      >
+                        <Users className="w-4 h-4" />
+                        {t('discoveryView.channel-list')}
+                      </Button>
+                    </div>
+                  </>
+                ) : selectedDiscoveryChannel === 'weekly' ? (
+                  <>
+                    {isDesktopSafeMode ? (
+                      <div className="w-16 h-16 rounded-2xl bg-muted dark:bg-card flex items-center justify-center text-muted-foreground dark:text-muted-foreground border border-border dark:border-border">
+                        {currentChannelIconNode}
+                      </div>
+                    ) : (
+                      <div className={`w-20 h-20 rounded-3xl bg-gradient-to-br ${currentChannelStyle.gradient} flex items-center justify-center shadow-md ${currentChannelStyle.shadow}`}>
+                        {currentChannelStyle.largeIcon}
+                      </div>
+                    )}
+                    <div className="space-y-2 max-w-xs">
+                      <p className="text-muted-foreground dark:text-muted-foreground font-medium text-base">
+                        {t('discoveryView.ruanyifeng-weekly')}
+                      </p>
+                      <p className="text-sm text-muted-foreground dark:text-muted-foreground leading-relaxed">
+                        {t('discoveryView.sync-open-source-submissions-from-the-weekly-ear')}
+                      </p>
+                    </div>
+                    <Button
+                      variant="default"
+                      onClick={() => refreshChannel('weekly', 1, false)}
+                      disabled={currentIsLoading}
+                      className={isDesktopSafeMode
+                        ? 'flex items-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90'
+                        : 'flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90'}
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      {t('discoveryView.start-sync')}
+                    </Button>
                   </>
                 ) : (
                   <>
@@ -940,10 +1218,10 @@ export const DiscoveryView: React.FC = React.memo(() => {
                     )}
                     <div className="space-y-2 max-w-xs">
                       <p className="text-muted-foreground dark:text-muted-foreground font-medium text-base">
-                        {t('暂无数据', 'No data yet')}
+                        {t('discoveryView.no-data-yet')}
                       </p>
                       <p className="text-sm text-muted-foreground dark:text-muted-foreground leading-relaxed">
-                        {t('点击刷新按钮获取最新排行数据', 'Click refresh to fetch latest rankings')}
+                        {t('discoveryView.click-refresh-to-fetch-latest-rankings')}
                       </p>
                     </div>
                     <Button
@@ -955,7 +1233,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
                         : 'flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90'}
                     >
                       <RefreshCw className="w-4 h-4" />
-                      {t('立即刷新', 'Refresh Now')}
+                      {t('discoveryView.refresh-now')}
                     </Button>
                   </>
                 )}
@@ -975,7 +1253,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
             {currentIsLoadingMore && (
               <div className="flex items-center justify-center py-6 gap-3">
                 <Loader2 className="w-5 h-5 animate-spin text-primary" />
-                <span className="text-sm text-muted-foreground dark:text-muted-foreground">{t('正在加载更多…', 'Loading more…')}</span>
+                <span className="text-sm text-muted-foreground dark:text-muted-foreground">{t('discoveryView.loading-more')}</span>
               </div>
             )}
 
@@ -995,7 +1273,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
                   className="px-4 py-2 rounded-lg text-sm font-medium bg-muted dark:bg-muted/40 text-muted-foreground dark:text-muted-foreground hover:bg-accent dark:hover:bg-accent transition-colors flex items-center gap-2"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
-                  {t('重试', 'Retry')}
+                  {t('discoveryView.retry')}
                 </Button>
               </div>
             )}
@@ -1008,7 +1286,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
                 <div className="flex items-center gap-2 text-muted-foreground dark:text-muted-foreground">
                   <div className="w-1.5 h-1.5 rounded-full bg-primary" />
                   <span>
-                    {t('共', 'Total')} <strong className="text-foreground dark:text-foreground">{allRepos.length}</strong> {t('个项目', 'items')}
+                    {t('discoveryView.total')} <strong className="text-foreground dark:text-foreground">{allRepos.length}</strong> {t('discoveryView.items')}
                   </span>
                 </div>
 
@@ -1025,12 +1303,24 @@ export const DiscoveryView: React.FC = React.memo(() => {
                 language={language}
               />
             )}
+            </>
+            )}
 
 
           </div>
 
           {/* 滚动到底部按钮 */}
           <ScrollToBottom scrollContainerRef={scrollContainerRef} />
+
+          {/* X 推文频道关注列表设置 */}
+          <XTweetSettingsModal
+            isOpen={tweetSettingsOpen}
+            onClose={() => setTweetSettingsOpen(false)} />
+
+          {/* Telegram 频道关注列表设置 */}
+          <TelegramSettingsModal
+            isOpen={telegramSettingsOpen}
+            onClose={() => setTelegramSettingsOpen(false)} />
         </div>
       </div>
     </div>
