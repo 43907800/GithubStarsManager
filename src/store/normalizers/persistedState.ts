@@ -10,9 +10,15 @@ import { defaultHeaderMenuConfig, defaultSubscriptionChannels } from '../../type
 import { DEFAULT_THEME_PRESET_ID, isThemePresetId } from '../../constants/themePresets';
 import { isAppLanguage } from '../../i18n/languages';
 import { normalizeReleaseSourceSettings } from '../../utils/releaseSources';
+import { normalizeAssetFilters } from '../../utils/assetFilters';
+import { normalizeThemeTokens } from '../../utils/themeTokens';
+import { normalizeTrendingSnapshots } from '../../utils/trendingSnapshots';
 import { normalizeRepositoryCardFields } from '../../utils/repositoryCardFields';
+import { normalizeRepositoryCardActions } from '../../utils/repositoryCardActions';
 import { normalizeXTweetAuth, normalizeXTweetFollows } from '../../utils/xTweetFollows';
 import { normalizeTelegramFollows } from '../../utils/telegramFollows';
+import { normalizeExternalDiscoveryChannels } from '../../utils/discoveryFeeds';
+import { isChannelScrapable, isScrapeSupportSettled } from '../../services/scrapeSupport';
 import type { AppStoreState } from '../types';
 import { normalizeAccountWorkspaces } from '../helpers/accountWorkspace';
 import { readAuthMirror } from '../persistence/authStorage';
@@ -30,12 +36,57 @@ import {
   REQUIRED_HEADER_MENU_IDS,
 } from '../schema';
 
+export const normalizePluginCustomIcons = (value: unknown): Record<string, string> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof k === 'string' && k.trim() && typeof v === 'string' && v.trim()) {
+      result[k.trim()] = v.trim();
+    }
+  }
+  return result;
+};
+
 export const normalizePersistedState = (
   persisted: PersistedAppState | undefined,
   currentState: AppStoreState
 ): Partial<AppStoreState> => {
   const safePersisted = persisted ?? {};
-  const defaultDiscoveryChannelIds = new Set(defaultDiscoveryChannels.map((channel) => channel.id));
+  // 旧版持久化只有 theme/themePreset 单值；新契约是 themeMode +
+  // 按深浅分开的 themePresetLight/themePresetDark。旧键在此消费，
+  // 不再进入水合后的状态（避免残留僵尸字段）。
+  const { theme: legacyTheme, themePreset: legacyThemePreset, ...persistedRest } = safePersisted as
+    PersistedAppState & { theme?: unknown; themePreset?: unknown };
+  const resolvedLegacyTheme = legacyTheme === 'light' || legacyTheme === 'dark' ? legacyTheme : null;
+  const themeMode: AppStoreState['themeMode'] =
+    safePersisted.themeMode === 'light' || safePersisted.themeMode === 'dark' || safePersisted.themeMode === 'system'
+      ? safePersisted.themeMode
+      : (resolvedLegacyTheme ?? 'dark');
+  const legacyPreset = isThemePresetId(legacyThemePreset) ? legacyThemePreset : DEFAULT_THEME_PRESET_ID;
+  const themePresetLight = isThemePresetId(safePersisted.themePresetLight)
+    ? safePersisted.themePresetLight
+    : legacyPreset;
+  const themePresetDark = isThemePresetId(safePersisted.themePresetDark)
+    ? safePersisted.themePresetDark
+    : legacyPreset;
+  const persistedDiscoveryChannels = (safePersisted as Record<string, unknown>).discoveryChannels;
+  const normalizedDiscoveryChannels = [...defaultDiscoveryChannels.map((defaultChannel) => {
+    const persistedChannel = Array.isArray(persistedDiscoveryChannels)
+      ? persistedDiscoveryChannels.find((channel: unknown) =>
+          (channel as Record<string, unknown>)?.id === defaultChannel.id
+        ) as Record<string, unknown> | undefined
+      : undefined;
+    return {
+      ...defaultChannel,
+      enabled: persistedChannel?.enabled !== false,
+    };
+  }), ...normalizeExternalDiscoveryChannels(persistedDiscoveryChannels)];
+  // 抓取支持结论未落定（Web 启动探测中）时不做可见性决策，完整保留持久化的
+  // 启用标志，避免误启用「趋势」并被后续持久化写入固化（桌面端恒定已落定）
+  const scrapeSupportSettled = isScrapeSupportSettled();
+  if (scrapeSupportSettled && !normalizedDiscoveryChannels.some(channel => channel.enabled && isChannelScrapable(channel.id))) {
+    normalizedDiscoveryChannels[0] = { ...normalizedDiscoveryChannels[0], enabled: true };
+  }
   const authMirror = readAuthMirror();
 
   // Effective auth: persisted values win; the synchronous localStorage mirror
@@ -55,32 +106,51 @@ export const normalizePersistedState = (
   const starredGists = Array.isArray(safePersisted.starredGists) ? safePersisted.starredGists : [];
   const releases = Array.isArray(safePersisted.releases) ? safePersisted.releases : [];
 
-  // Migration for old users: mark repos with existing releases as already synced
-  const migratedRepositories = repositories.map(repo => {
-    const hasExistingRelease = releases.some(r => r.repository?.id === repo.id);
-    if (hasExistingRelease && !repo.has_fetched_releases) {
+  // Migration for old users: mark repos with existing releases as already synced.
+  // 引用保留：无需回填时直接返回原数组——分片持久化按引用判脏，若 hydration
+  // 总是产生新数组引用，会在每次启动后触发一次全量重写。
+  // 用 String(id) 建索引：历史快照里 id 可能被持久化为字符串，与旧实现的
+  // `===` 宽松匹配历史数据保持等价；单次遍历建 Map，回填整体 O(R+L)。
+  const latestReleaseTimeByRepoId = new Map<string, number>();
+  for (const release of releases) {
+    const repoId = release.repository?.id;
+    if (repoId === undefined || repoId === null) continue;
+    const key = String(repoId);
+    const publishedTime = new Date(release.published_at).getTime();
+    const previous = latestReleaseTimeByRepoId.get(key);
+    latestReleaseTimeByRepoId.set(key, previous === undefined ? publishedTime : Math.max(previous, publishedTime));
+  }
+  const needsReleaseBackfill = repositories.some(
+    repo => latestReleaseTimeByRepoId.has(String(repo.id)) && !repo.has_fetched_releases,
+  );
+  const migratedRepositories = needsReleaseBackfill
+    ? repositories.map(repo => {
+      if (repo.has_fetched_releases) {
+        return repo;
+      }
       // Backfill last_release_fetch_time from the latest persisted release timestamp
-      const repoReleases = releases.filter(r => r.repository?.id === repo.id);
-      const latestReleaseTime = repoReleases.length > 0
-        ? Math.max(...repoReleases.map(r => new Date(r.published_at).getTime()))
-        : null;
+      const latestReleaseTime = latestReleaseTimeByRepoId.get(String(repo.id));
+      if (latestReleaseTime === undefined) {
+        return repo;
+      }
       return {
         ...repo,
         has_fetched_releases: true,
         last_release_fetch_time: repo.last_release_fetch_time || (latestReleaseTime ? new Date(latestReleaseTime).toISOString() : new Date().toISOString())
       };
-    }
-    return repo;
-  });
+    })
+    : repositories;
 
   // Default includePreRelease to true if not set (backward compatibility)
   const includePreRelease = safePersisted.includePreRelease !== undefined
     ? safePersisted.includePreRelease
     : true;
 
+  const normalizedAssetFilters = normalizeAssetFilters(safePersisted.assetFilters);
+
   return {
     ...currentState,
-    ...safePersisted,
+    ...persistedRest,
     // Auth fallback: if the IndexedDB snapshot is missing the login credentials
     // (e.g. async unload write never completed), restore from the synchronous
     // localStorage mirror. Persisted values always win over the mirror.
@@ -90,13 +160,10 @@ export const normalizePersistedState = (
     accountWorkspaces: normalizeAccountWorkspaces(
       (safePersisted as Record<string, unknown>).accountWorkspaces,
     ),
-    theme:
-      safePersisted.theme === 'light' || safePersisted.theme === 'dark'
-        ? safePersisted.theme
-        : 'dark',
-    themePreset: isThemePresetId(safePersisted.themePreset)
-      ? safePersisted.themePreset
-      : DEFAULT_THEME_PRESET_ID,
+    themeMode,
+    themePresetLight,
+    themePresetDark,
+    themeTokens: normalizeThemeTokens((safePersisted as Record<string, unknown>).themeTokens),
     repositories: migratedRepositories,
     gists,
     starredGists,
@@ -174,46 +241,45 @@ export const normalizePersistedState = (
     categoryOrder: Array.isArray(safePersisted.categoryOrder) ? safePersisted.categoryOrder.filter((id: unknown): id is string => typeof id === 'string') : [],
     collapsedSidebarCategoryCount: typeof safePersisted.collapsedSidebarCategoryCount === 'number' && safePersisted.collapsedSidebarCategoryCount > 0 ? safePersisted.collapsedSidebarCategoryCount : 20,
     categoryMatchMode: safePersisted.categoryMatchMode === 'legacy' ? 'legacy' : 'effective',
-    assetFilters: Array.isArray(safePersisted.assetFilters) && safePersisted.assetFilters.length > 0 ? safePersisted.assetFilters : defaultPresetFilters,
+    assetFilters: normalizedAssetFilters.length > 0 ? normalizedAssetFilters : defaultPresetFilters,
+    // Trending 快照（开发守则 §7）：逐份校验并裁剪，坏快照不进内存
+    trendingSnapshots: normalizeTrendingSnapshots((safePersisted as Record<string, unknown>).trendingSnapshots),
     // 卡片可见字段（开发守则 §14）：逐项校验，非法值按默认（显示）处理
     repositoryCardFields: normalizeRepositoryCardFields((safePersisted as Record<string, unknown>).repositoryCardFields),
+    repositoryCardActions: normalizeRepositoryCardActions((safePersisted as Record<string, unknown>).repositoryCardActions),
+    pluginCustomIcons: normalizePluginCustomIcons((safePersisted as Record<string, unknown>).pluginCustomIcons),
     language: isAppLanguage(safePersisted.language) ? safePersisted.language : currentState.language,
     translationEngine: safePersisted.translationEngine === 'google' || safePersisted.translationEngine === 'ai'
       ? safePersisted.translationEngine
       : 'microsoft',
+    autoTranslateRepoDescription: typeof safePersisted.autoTranslateRepoDescription === 'boolean'
+      ? safePersisted.autoTranslateRepoDescription
+      : false,
+    // 更新检查偏好：自动检查开关默认开启；"不再提示"版本须为非空字符串
+    autoUpdateCheckEnabled: typeof safePersisted.autoUpdateCheckEnabled === 'boolean'
+      ? safePersisted.autoUpdateCheckEnabled
+      : true,
+    updatePromptDismissedVersion: typeof safePersisted.updatePromptDismissedVersion === 'string' && safePersisted.updatePromptDismissedVersion
+      ? safePersisted.updatePromptDismissedVersion
+      : null,
     isAuthenticated: !!(resolvedUser && resolvedGithubToken),
     releaseViewMode: safePersisted.releaseViewMode || 'timeline',
     releaseShowMode: safePersisted.releaseShowMode === 'unread' ? 'unread' : 'all',
     releaseLatestMode: safePersisted.releaseLatestMode === 'latest' ? 'latest' : 'all',
     releaseSelectedFilters: Array.isArray(safePersisted.releaseSelectedFilters) ? safePersisted.releaseSelectedFilters : [],
     releaseSearchQuery: typeof safePersisted.releaseSearchQuery === 'string' ? safePersisted.releaseSearchQuery : '',
-    discoveryChannels: (() => {
-      const persisted = (safePersisted as Record<string, unknown>).discoveryChannels;
-      if (!Array.isArray(persisted)) return defaultDiscoveryChannels;
-
-      return defaultDiscoveryChannels.map((defaultChannel) => {
-        const persistedChannel = persisted.find((channel: unknown) => {
-          return (channel as Record<string, unknown>)?.id === defaultChannel.id;
-        }) as Record<string, unknown> | undefined;
-
-        if (!persistedChannel) {
-          return defaultChannel;
-        }
-
-        return {
-      ...defaultChannel,
-      enabled: persistedChannel.enabled !== false,
-    };
-      });
-    })(),
+    discoveryChannels: normalizedDiscoveryChannels,
     // discoveryRepos is session-only runtime data. Never revive a stale legacy
     // cache during hydration, even if a historical snapshot contains the field.
     discoveryRepos: { 'trending': [], 'hot-release': [], 'most-popular': [], 'topic': [], 'x-tweet': [], 'telegram': [], 'weekly': [], 'search': [], 'code-search': [] } as Record<DiscoveryChannelId, DiscoveryRepo[]>,
     discoveryLastRefresh: { 'trending': null, 'hot-release': null, 'most-popular': null, 'topic': null, 'x-tweet': null, 'telegram': null, 'weekly': null, 'search': null, 'code-search': null },
     discoveryTotalCount: { 'trending': 0, 'hot-release': 0, 'most-popular': 0, 'topic': 0, 'x-tweet': 0, 'telegram': 0, 'weekly': 0, 'search': 0, 'code-search': 0 },
-    selectedDiscoveryChannel: defaultDiscoveryChannelIds.has(safePersisted.selectedDiscoveryChannel as DiscoveryChannelId)
+    // 选中频道保留持久化值（存在且启用即可；未落定时 Visibility 判定延后，
+    // 由 DiscoveryView 在抓取支持结论落定后再纠偏，避免 Web+后端用户启动探测
+    // 未完成时丢失选择）
+    selectedDiscoveryChannel: normalizedDiscoveryChannels.some(channel => channel.id === safePersisted.selectedDiscoveryChannel && channel.enabled && (!scrapeSupportSettled || isChannelScrapable(channel.id)))
       ? safePersisted.selectedDiscoveryChannel as DiscoveryChannelId
-      : 'trending',
+      : normalizedDiscoveryChannels.find(channel => channel.enabled && (!scrapeSupportSettled || isChannelScrapable(channel.id)))?.id ?? defaultDiscoveryChannels[0].id,
     // discoveryIsLoading 不持久化，始终重置为 false（防止旧数据格式异常）
     discoveryIsLoading: { 'trending': false, 'hot-release': false, 'most-popular': false, 'topic': false, 'x-tweet': false, 'telegram': false, 'weekly': false, 'search': false, 'code-search': false },
     discoveryIsLoadingMore: { 'trending': false, 'hot-release': false, 'most-popular': false, 'topic': false, 'x-tweet': false, 'telegram': false, 'weekly': false, 'search': false, 'code-search': false },

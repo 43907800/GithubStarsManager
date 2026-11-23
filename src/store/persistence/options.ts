@@ -7,6 +7,7 @@ import { logger } from '../../services/logger';
 import { normalizeReleaseSourceSettings } from '../../utils/releaseSources';
 import { normalizeXTweetFollows } from '../../utils/xTweetFollows';
 import { normalizeTelegramFollows } from '../../utils/telegramFollows';
+import { normalizeExternalDiscoveryChannels } from '../../utils/discoveryFeeds';
 import type { AppStoreState } from '../types';
 import {
   defaultDiscoveryChannels,
@@ -22,7 +23,7 @@ import { debouncedPersistStorage } from './storage';
 
 export const appPersistenceOptions: PersistOptions<AppStoreState, PersistedAppState> = {
   name: 'github-stars-manager',
-  version: 16,
+  version: 17,
   storage: debouncedPersistStorage as PersistStorage<PersistedAppState>,
 partialize: (state) => ({
   // 持久化用户信息和认证状态
@@ -34,6 +35,9 @@ partialize: (state) => ({
   // 持久化仓库数据
   repositories: state.repositories,
   lastSync: state.lastSync,
+
+  // Theme token（开发守则 §14）：声明式外观偏好
+  themeTokens: state.themeTokens,
 
   // 持久化 Gist 数据
   gists: state.gists,
@@ -89,14 +93,24 @@ sortOrder: state.gistSearchFilters.sortOrder,
   assetFilters: state.assetFilters,
   // 卡片可见字段（开发守则 §14）
   repositoryCardFields: state.repositoryCardFields,
+  repositoryCardActions: state.repositoryCardActions,
+  pluginCustomIcons: state.pluginCustomIcons,
+
+  // Trending 快照（开发守则 §7）：本地榜单历史，不参与任何远端同步
+  trendingSnapshots: state.trendingSnapshots,
 
   // 持久化UI设置
-  theme: state.theme,
-  themePreset: state.themePreset,
+  themeMode: state.themeMode,
+  themePresetLight: state.themePresetLight,
+  themePresetDark: state.themePresetDark,
   currentView: state.currentView,
   selectedCategory: state.selectedCategory,
   language: state.language,
   translationEngine: state.translationEngine,
+  autoTranslateRepoDescription: state.autoTranslateRepoDescription,
+  // 更新检查偏好：自动检查开关 + 用户"不再提示"的版本号
+  autoUpdateCheckEnabled: state.autoUpdateCheckEnabled,
+  updatePromptDismissedVersion: state.updatePromptDismissedVersion,
   isSidebarCollapsed: state.isSidebarCollapsed,
   headerMenuConfig: state.headerMenuConfig,
 
@@ -150,6 +164,9 @@ discoveryPlatform: state.discoveryPlatform,
 discoveryLanguage: state.discoveryLanguage,
 discoverySortBy: state.discoverySortBy,
 discoverySortOrder: state.discoverySortOrder,
+// 仓库搜索模式（关键词/AI 语义）持久化；语义搜索的 phase 进度与空态原因是
+// 会话级运行时数据（同 discoveryRepos 理由），不入白名单。
+discoverySearchMode: state.discoverySearchMode,
 discoverySelectedTopic: state.discoverySelectedTopic,
   weeklyOnlyCollected: state.weeklyOnlyCollected,
   xTweetFollows: state.xTweetFollows,
@@ -238,7 +255,7 @@ state.selectedDiscoveryChannel = 'trending';
 state.discoveryChannels = defaultDiscoveryChannels;
   } else if (state && Array.isArray(state.discoveryChannels)) {
 const persistedChannels = state.discoveryChannels as unknown[];
-state.discoveryChannels = defaultDiscoveryChannels.map((defaultChannel) => {
+state.discoveryChannels = [...defaultDiscoveryChannels.map((defaultChannel) => {
 const persistedChannel = persistedChannels.find((channel) => {
   return (channel as Record<string, unknown>)?.id === defaultChannel.id;
 }) as Record<string, unknown> | undefined;
@@ -251,7 +268,7 @@ return {
 ...defaultChannel,
 enabled: persistedChannel.enabled !== false,
 };
-});
+}), ...normalizeExternalDiscoveryChannels(persistedChannels)];
   }
   // 迁移订阅频道（版本 4→5：daily-dev → most-dev，新增 trending，补全 nameEn）
   const defaultChannelsMap = new Map(defaultSubscriptionChannels.map(ch => [ch.id, ch]));
@@ -321,6 +338,17 @@ state.discoverySortOrder = 'Descending';
   // v14: 周刊频道过滤器偏好兜底
   if (state && typeof (state as Record<string, unknown>).weeklyOnlyCollected !== 'boolean') {
     (state as Record<string, unknown>).weeklyOnlyCollected = false;
+  }
+
+  // v16→v17: 更新检查偏好兜底（自动检查默认开启；"不再提示"版本默认为空）
+  if (state) {
+    const stateRecord = state as Record<string, unknown>;
+    if (typeof stateRecord.autoUpdateCheckEnabled !== 'boolean') {
+      stateRecord.autoUpdateCheckEnabled = true;
+    }
+    if (typeof stateRecord.updatePromptDismissedVersion !== 'string' || !stateRecord.updatePromptDismissedVersion) {
+      stateRecord.updatePromptDismissedVersion = null;
+    }
   }
 
   // v14→v15: X 推文频道选项兜底（关注列表默认含 geekbb）

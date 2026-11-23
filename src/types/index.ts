@@ -3,8 +3,26 @@ import type { AppLanguage } from '../i18n/languages';
 
 import type { RepositoryCardFields } from './repositoryCardFields';
 export type { RepositoryCardFieldId, RepositoryCardFields } from './repositoryCardFields';
+import type { RepositoryCardActionPreference } from './repositoryCardActions';
+export type {
+  BuiltinRepositoryCardActionId,
+  RepositoryCardActionId,
+  RepositoryCardActionPreference,
+} from './repositoryCardActions';
+export {
+  isPluginActionId,
+  makePluginActionId,
+  parsePluginActionId,
+} from './repositoryCardActions';
 import type { RepositoryChatSettings } from './repositoryChat';
 export type { RepositoryChatSettings } from './repositoryChat';
+import type { ThemeTokens } from './themeTokens';
+export type { ThemeTokens } from './themeTokens';
+
+/** 显示模式偏好：system = 跟随操作系统深浅设置 */
+export type ThemeMode = 'light' | 'dark' | 'system';
+import type { TrendingSnapshot } from './trendingSnapshot';
+export type { TrendingSnapshot } from './trendingSnapshot';
 export type {
   RepositoryHealthEnrichment,
   RepositoryHealthFact,
@@ -62,6 +80,10 @@ export interface Repository {
   custom_tags?: string[];
   custom_category?: string;
   category_locked?: boolean;
+  /** 描述显示偏好：follow=跟随列表页"显示内容"开关（默认），ai=固定显示AI总结，original=固定显示原始描述 */
+  description_display?: 'follow' | 'ai' | 'original';
+  /** 标签显示偏好：follow=跟随列表页"显示内容"开关（默认），ai=固定显示AI标签，topics=固定显示Topics */
+  tags_display?: 'follow' | 'ai' | 'topics';
   last_edited?: string;
   vector_indexed_at?: string;  // ISO timestamp of last successful vector indexing
   /** 上次向量索引时采用的 license（SPDX id / null）。增量谓词据此判断 license 是否变化以触发重索引。 */
@@ -341,6 +363,8 @@ export interface AIConfig {
   concurrency?: number; // AI分析并发数，默认为1
   requestsPerMinute?: number; // 每分钟 AI 请求数上限（供批量分析的共享限流器使用），0/缺省=不限制
   reasoningEffort?: AIReasoningEffort; // OpenAI GPT-5/Responses 可选 reasoning 强度
+  /** 问答内部 JSON 步骤（理解/规划/gate）是否关闭思考；默认 true，不暴露 UI。仅对有请求级关闭开关的供应商生效：OpenAI gpt-5.1+ 发送 reasoning.effort:'none'，DeepSeek/MiMo 发送 thinking:'disabled'；其余供应商无关闭参数，保持原有请求形态（Claude 默认不开启思考；Gemini 2.5 默认开启且当前请求不发送 thinkingConfig）。 */
+  disableThinkingForInternalSteps?: boolean;
   mimoPlan?: MiMoPlan; // MiMo 渠道：api（按量付费）或 token-plan（订阅制）
   supportsToolCalls?: boolean; // 端点/模型支持 OpenAI 风格 function calling（仓库问答工具循环用，默认关闭）
   apiKeyStatus?: SecretStatus;
@@ -354,6 +378,8 @@ export interface WebDAVConfig {
   password: string;
   path: string;
   isActive: boolean;
+  /** 部分服务（如 CSTCloud 数据胶囊）按 User-Agent 校验客户端，空值保持默认行为 */
+  customUserAgent?: string;
   passwordStatus?: SecretStatus;
 }
 
@@ -420,6 +446,24 @@ export interface AssetFilter {
   id: string;
   name: string;
   keywords: string[];
+  /**
+   * 黑名单关键词：资产文件名命中任一关键词时，即使命中 keywords 也不匹配。
+   * 用于在同平台过滤器内剔除安装包等噪声（如 "setup"、"installer"）。
+   */
+  excludeKeywords?: string[];
+  /**
+   * 始终包含的仓库（Repository.full_name）：该过滤器启用时，这些仓库的 Release
+   * 无需命中关键词也会出现在筛选结果中（用于 Release 不含过滤器关键词的仓库，
+   * 如仅发布 zip 或源码归档的项目）；未选过滤器时列表不受影响，也不影响订阅。
+   */
+  includeRepos?: string[];
+  /**
+   * 始终排除的仓库（Repository.full_name）：仅作用于所属过滤器。该过滤器启用时，
+   * 这些仓库的 Release 不通过本过滤器（优先于本过滤器的关键词与 includeRepos），
+   * 但不会否决其它已启用过滤器的命中。不复用 #405 遗留的 `excludeRepos` 键，
+   * 避免历史数据被重新解释为该语义。
+   */
+  alwaysExcludeRepos?: string[];
   isPreset?: boolean;
   icon?: string;
 }
@@ -479,6 +523,13 @@ export interface AppState {
   repositoryViewMode: 'grid' | 'list';
   /** 仓库卡片显示哪些字段（开发守则 §14）：只保存声明式开关 */
   repositoryCardFields: RepositoryCardFields;
+  /** Quick-action order and toolbar visibility; hidden actions remain in the menu. */
+  repositoryCardActions: RepositoryCardActionPreference[];
+  /** Custom icons for plugins: mapping pluginId to built-in icon key. */
+  pluginCustomIcons: Record<string, string>;
+
+  // Theme tokens（开发守则 §14）：声明式外观偏好，落到 <html> 的 CSS 变量上
+  themeTokens: ThemeTokens;
 
   // Gists
   gists: Gist[];
@@ -532,20 +583,30 @@ export interface AppState {
   assetFilters: AssetFilter[]; // 新增：资源过滤器
   
   // UI
-  theme: 'light' | 'dark';
+  /** 显示模式偏好：跟随系统时由 systemTheme 解析出实际深浅 */
+  themeMode: ThemeMode;
+  /** 操作系统当前深浅偏好（不持久化，仅跟随 system 模式使用） */
+  systemTheme: 'light' | 'dark';
   /** 主题配色预设（默认 + 内置精选），见 constants/themePresets */
-  themePreset: ThemePresetId;
+  themePresetLight: ThemePresetId;
+  themePresetDark: ThemePresetId;
   currentView: 'repositories' | 'gists' | 'releases' | 'forks' | 'settings' | 'subscription';
   selectedCategory: string;
   language: AppLanguage;
   /** README 文档翻译引擎（微软 / Google / AI），见 TranslationEngine */
   translationEngine: TranslationEngine;
+  /** 自动翻译卡片上的仓库原始描述为界面语言（默认关闭；同语言/失败时显示原文） */
+  autoTranslateRepoDescription: boolean;
   isSidebarCollapsed: boolean;
   readmeModalOpen: boolean;
   headerMenuConfig: HeaderMenuItem[];
   
   // Update
   updateNotification: UpdateNotification | null;
+  /** 启动时自动检查更新（设置-通用-检查更新 中可关闭；关闭后仍可手动检查） */
+  autoUpdateCheckEnabled: boolean;
+  /** 用户选择"不再提示"的版本号：该版本仍为最新时不再自动提示，出新版本后自动失效 */
+  updatePromptDismissedVersion: string | null;
 
   // Analysis Progress
   analysisProgress: AnalysisProgress
@@ -599,12 +660,25 @@ export interface AppState {
   discoverySortBy: SortBy;
   discoverySortOrder: SortOrder;
   discoverySearchQuery: string;
+  /** 仓库搜索模式：keyword=关键词（默认，行为不变）；semantic=AI 语义（全网仓库） */
+  discoverySearchMode: 'keyword' | 'semantic';
+  /** 语义搜索当前阶段（会话级，不持久化；原始阶段 id：expanding/recalling/enriching/reranking，null=不在搜索中） */
+  discoverySearchPhase: string | null;
+  /** 当前阶段的补充明细（如补全计数 "30/60"；会话级，不持久化） */
+  discoverySearchPhaseDetail: string | null;
+  /** 语义搜索空态原因（会话级，不持久化；recall_empty=召回为空，ai_empty=AI 判定空） */
+  discoverySearchEmptyReason: 'recall_empty' | 'ai_empty' | null;
   discoverySelectedTopic: TopicCategory | null;
   discoveryHasMore: Record<DiscoveryChannelId, boolean>;
   discoveryNextPage: Record<DiscoveryChannelId, number>;
   discoveryTotalCount: Record<DiscoveryChannelId, number>;
   discoveryScrollPositions: Record<DiscoveryChannelId, number>;
   trendingTimeRange: TrendingTimeRange;
+  /**
+   * Trending 快照历史（开发守则 §7）：本地记录每次看到的榜单，用于算排名变化、首次上榜与
+   * 连续上榜。按「周期 × 语言 × 自然日」去重，条数与天数都有上限。
+   */
+  trendingSnapshots: TrendingSnapshot[];
   /** 周刊频道过滤器：仅显示已被周刊收录（issue labels 含 'weekly'）的条目 */
   weeklyOnlyCollected: boolean;
   /** 周刊频道同步进度（会话级，不持久化） */
@@ -690,7 +764,7 @@ export type SortBy = 'BestMatch' | 'MostStars' | 'MostForks';
 
 export type SortOrder = 'Descending' | 'Ascending';
 
-export type DiscoveryChannelId = 'trending' | 'hot-release' | 'most-popular' | 'topic' | 'x-tweet' | 'telegram' | 'weekly' | 'search' | 'code-search';
+export type DiscoveryChannelId = 'trending' | 'hot-release' | 'most-popular' | 'topic' | 'x-tweet' | 'telegram' | 'weekly' | 'search' | 'code-search' | `external:${string}`;
 
 export type DiscoveryChannelIcon = 'trending' | 'rocket' | 'star' | 'tag' | 'tweet' | 'telegram' | 'weekly' | 'search';
 
@@ -760,6 +834,9 @@ export interface TelegramRef {
   createdAt: string;
 }
 
+/** User-configured external discovery source formats. */
+export type ExternalFeedKind = 'json' | 'rss';
+
 export interface DiscoveryChannel {
   id: DiscoveryChannelId;
   name: string;
@@ -767,6 +844,10 @@ export interface DiscoveryChannel {
   icon: DiscoveryChannelIcon;
   description: string;
   enabled: boolean;
+  /** User-configured, public feed; only present for external channels. */
+  sourceUrl?: string;
+  /** Feed format of `sourceUrl`; omitted means the default JSON format. */
+  sourceKind?: ExternalFeedKind;
 }
 
 export interface PaginatedDiscoveryRepositories {

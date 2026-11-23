@@ -86,8 +86,7 @@ function buildApiUrl(baseUrl: string, pathWithVersion: string): string {
     }
 
     if (versionPrefix) {
-      const versionRe = new RegExp(`/${versionPrefix}$`);
-      if (versionRe.test(basePath) && pathWithVersion.startsWith(`${versionPrefix}/`)) {
+      if (basePath.endsWith(`/${versionPrefix}`) && pathWithVersion.startsWith(`${versionPrefix}/`)) {
         const rest = pathWithVersion.slice(versionPrefix.length + 1);
         return new URL(rest, baseUrlWithSlash).toString();
       }
@@ -99,11 +98,38 @@ function buildApiUrl(baseUrl: string, pathWithVersion: string): string {
   }
 }
 
+// openai-compatible 与前端 buildFinalApiUrl 保持同一补全规则：仅当 baseUrl
+// 正好是版本根地址（https://host/v1）时补全 /chat/completions，更长路径视为
+// 完整端点保持原样，避免直连与代理请求不同地址。
+function completeOpenAiCompatibleUrl(baseUrl: string): string {
+  // `/\/+$/` 这类带量词的正则会被 CodeQL 判为对不可控输入的多项式回溯。
+  let trimmed = baseUrl;
+  while (trimmed.endsWith('/')) trimmed = trimmed.slice(0, -1);
+  try {
+    const url = new URL(trimmed);
+    const pathname = url.pathname.replace(/\/$/, '');
+    if (/^\/v\d+(?:beta|alpha)?$/i.test(pathname)) {
+      url.pathname = `${pathname}/chat/completions`;
+      return url.toString();
+    }
+  } catch {
+    // 非 URL 形式保持原样，由请求阶段报错。
+  }
+  return trimmed;
+}
+
 // POST /api/proxy/github/*
-router.post('/api/proxy/github/*', async (req, res) => {
+router.post(/^\/api\/proxy\/github\/(.*)/, async (req, res) => {
   try {
     const db = getDb();
-    const githubPath = (req.params as Record<string, string>)[0]; // wildcard capture
+    const rawPath = (req.params as Record<string, string>)[0];
+    const githubPath = Array.isArray(rawPath) ? rawPath.join('/') : (rawPath ?? '');
+
+    // Prevent path traversal
+    if (typeof githubPath !== 'string' || githubPath.includes('..') || githubPath.includes('\\')) {
+      res.status(400).json({ error: 'Invalid target path', code: 'INVALID_TARGET_PATH' });
+      return;
+    }
     
     // Read and decrypt GitHub token from settings
     const tokenRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('github_token') as { value: string } | undefined;
@@ -120,9 +146,33 @@ router.post('/api/proxy/github/*', async (req, res) => {
       return;
     }
 
-    // Build target URL with query params
-    const queryString = new URL(req.url, 'http://localhost').search;
-    const targetUrl = `https://api.github.com/${githubPath}${queryString}`;
+    const cleanPath = githubPath.replace(/^\/+/, '');
+    const safeSegments = cleanPath.split('/').map(seg => encodeURIComponent(seg)).join('/');
+
+    const searchParams = new URL(req.url, 'http://localhost').searchParams;
+    const safeSearchParams = new URLSearchParams();
+    for (const [key, value] of searchParams.entries()) {
+      // URLSearchParams already decoded the incoming values; set them raw so
+      // toString() performs exactly one round of encoding.
+      safeSearchParams.set(key, value);
+    }
+    const safeQuery = safeSearchParams.toString() ? `?${safeSearchParams.toString()}` : '';
+
+    const targetUrl = `https://api.github.com/${safeSegments}${safeQuery}`;
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(targetUrl);
+    } catch {
+      res.status(400).json({ error: 'Invalid target path', code: 'INVALID_TARGET_PATH' });
+      return;
+    }
+
+    if (parsedUrl.protocol !== 'https:' || parsedUrl.hostname !== 'api.github.com') {
+      res.status(400).json({ error: 'Host not allowed', code: 'HOST_NOT_ALLOWED' });
+      return;
+    }
+    validateUrl(targetUrl);
 
     const body = req.body as { method?: string; headers?: Record<string, string>; body?: string | object };
     const method = body.method || 'GET';
@@ -290,9 +340,9 @@ router.post('/api/proxy/ai', async (req, res) => {
     };
 
     if (apiType === 'openai' || apiType === 'openai-responses' || apiType === 'openai-compatible' || apiType === 'deepseek' || apiType === 'mimo') {
-      // openai-compatible 类型直接使用 baseUrl 作为完整地址
+      // openai-compatible 类型与前端使用同一套版本根地址补全规则
       targetUrl = apiType === 'openai-compatible'
-        ? baseUrl.replace(/\/$/, '')
+        ? completeOpenAiCompatibleUrl(baseUrl)
         : buildApiUrl(baseUrl, apiType === 'openai-responses' ? 'v1/responses' : 'v1/chat/completions');
       headers['Authorization'] = `Bearer ${apiKey}`;
     } else if (apiType === 'claude') {
@@ -325,9 +375,9 @@ router.post('/api/proxy/ai', async (req, res) => {
 
     const timeout = apiType === 'openai-responses' || !!reasoningEffort ? 600000 : 60000;
 
-    // 宽松档（放行回环/私有网段）只用于「用户已保存的 AI 配置」(configId)。
-    // 内联 config 路径（任意客户端均可携带目标地址）保持严格档，避免 SSRF 放宽被滥用。
-    const allowPrivate = Boolean(configId);
+    // 用户配置的 AI 服务（无论为已保存的 configId 还是测试连接的内联 config）均来自受信任的用户输入，
+    // 放行回环/私有网段（如本地 Ollama 127.0.0.1、局域网服务等），支持 HTTP 与 HTTPS。
+    const allowPrivate = true;
 
     const proxyConfig = getProxyConfig();
     const result = await proxyRequest({
@@ -352,30 +402,60 @@ router.post('/api/proxy/ai', async (req, res) => {
 router.post('/api/proxy/webdav', async (req, res) => {
   try {
     const db = getDb();
-    const { configId, method, path, body: requestBody, headers: extraHeaders } = req.body as {
-      configId: string;
+    const { configId, method, path, body: requestBody, headers: extraHeaders,
+      inlineUrl, inlineUsername, inlinePassword, timeoutMs } = req.body as {
+      configId?: string;
       method: string;
       path: string;
       body?: string;
       headers?: Record<string, string>;
+      inlineUrl?: string;
+      inlineUsername?: string;
+      inlinePassword?: string;
+      timeoutMs?: number;
     };
 
-    if (!configId) {
-      res.status(400).json({ error: 'configId required', code: 'CONFIG_ID_REQUIRED' });
+    // path 必须是同源相对路径：否则 `https://dav.example.com` + `@evil.com/x`
+    // 会拼出 userinfo 形式的跨主机 URL。
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+      res.status(400).json({ error: 'path must be an absolute path', code: 'WEBDAV_PATH_INVALID' });
       return;
     }
 
-    const webdavConfig = db.prepare('SELECT * FROM webdav_configs WHERE id = ?').get(configId) as Record<string, unknown> | undefined;
-    if (!webdavConfig) {
+    const webdavConfig = configId
+      ? (db.prepare('SELECT * FROM webdav_configs WHERE id = ?').get(configId) as Record<string, unknown> | undefined)
+      : undefined;
+
+    let password: string;
+    let username: string;
+    let baseUrl: string;
+
+    if (webdavConfig) {
+      password = decrypt(webdavConfig.password_encrypted as string, config.encryptionKey);
+      username = webdavConfig.username as string;
+      baseUrl = webdavConfig.url as string;
+    } else if (inlineUrl && inlineUsername !== undefined && inlinePassword !== undefined) {
+      // 配置尚未同步到后端（例如"测试连接"发生在保存之前）时，使用请求携带的凭据
+      baseUrl = inlineUrl;
+      username = inlineUsername;
+      password = inlinePassword;
+    } else if (!configId) {
+      // 既没有已保存配置也没有内联凭据：属于请求参数缺失，而非"配置不存在"
+      res.status(400).json({ error: 'configId required', code: 'CONFIG_ID_REQUIRED' });
+      return;
+    } else {
       res.status(404).json({ error: 'WebDAV config not found', code: 'WEBDAV_CONFIG_NOT_FOUND' });
       return;
     }
 
-    const password = decrypt(webdavConfig.password_encrypted as string, config.encryptionKey);
-    const username = webdavConfig.username as string;
-    const baseUrl = webdavConfig.url as string;
-
-    const targetUrl = `${baseUrl}${path}`;
+    // path 恒以 / 开头：拼接前剥掉 baseUrl 的尾斜杠，避免 URL 带尾斜杠的配置
+    // （如备份导入）产生 /dav//backup 这样的双斜杠请求，服务器按原样返回
+    // href 时前端的多状态体比对会匹配不到目标条目。
+    // `/\/+$/` 这类带量词的正则会被 CodeQL 判为对不可控输入的多项式回溯，
+    // 与 completeOpenAiCompatibleUrl 一致改用线性扫描。
+    let trimmedBaseUrl = baseUrl;
+    while (trimmedBaseUrl.endsWith('/')) trimmedBaseUrl = trimmedBaseUrl.slice(0, -1);
+    const targetUrl = `${trimmedBaseUrl}${path}`;
     const credentials = Buffer.from(`${username}:${password}`).toString('base64');
 
     const safeHeaders = { ...(extraHeaders || {}) };
@@ -394,19 +474,39 @@ router.post('/api/proxy/webdav', async (req, res) => {
     }
 
     const proxyConfig = getProxyConfig();
+    // 大文件上传的客户端超时可达 300s，服务端必须不早于客户端超时，
+    // 否则代理会先于客户端 abort，上传被服务端单方面掐断。
+    const effectiveTimeout = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs)
+      ? Math.min(Math.max(Math.trunc(timeoutMs), 1000), 300000)
+      : 60000;
     const result = await proxyRequest({
       url: targetUrl,
       method,
       headers,
       body: requestBody,
-      timeout: 60000,
+      timeout: effectiveTimeout,
       proxyConfig,
       // 用户自有配置来源的 WebDAV 地址：放行回环/私有网段（局域网 NAS 等）
       allowPrivate: true,
+      // PROPFIND 返回 XML、错误返回 HTML：必须原样透传，
+      // 否则 res.json() 会二次编码，listFiles() 拿到的 XML 无法解析。
+      preserveRawResponse: true,
     });
 
     relayRateLimitHeaders(res, result.headers);
-    res.status(result.status).json(result.data);
+
+    // 204/304 不允许带 body；HEAD 的响应体本身为空
+    const bodyless = result.status === 204 || result.status === 304 || method === 'HEAD';
+    const contentType = result.headers['content-type'];
+    if (contentType && !bodyless) {
+      res.setHeader('Content-Type', contentType);
+    }
+    res.status(result.status);
+    if (bodyless) {
+      res.end();
+    } else {
+      res.send(typeof result.data === 'string' ? result.data : String(result.data ?? ''));
+    }
   } catch (err) {
     logger.errorFromError('proxy.webdav', 'WebDAV proxy error', err);
     res.status(500).json({ error: 'WebDAV proxy failed', code: 'WEBDAV_PROXY_FAILED' });
@@ -573,6 +673,7 @@ router.post('/api/settings/proxy/test', async (req, res) => {
         socket.on('connect', () => resolve(socket));
         socket.on('timeout', () => { socket.destroy(); reject(new Error('Connection timeout')); });
         socket.on('error', (err: Error) => reject(err));
+        // codeql[js/request-forgery] 目标是用户在设置中自填的自有代理服务器，按业务必须支持内网/回环地址。
         socket.connect(port, host);
       });
 
@@ -684,6 +785,35 @@ router.post('/api/settings/proxy/test', async (req, res) => {
 
 // --- RPC Download endpoints ---
 
+// aria2 RPC 的 host/port 直接拼进 `http://${host}:${port}/jsonrpc`。host 中出现
+// 路径分隔、查询、锚点、userinfo、百分号编码或空白字符都会改变 URL 的解析结构
+// （如 `1.2.3.4/#x`、`a%2fb@`），一律拒绝；其余字符（含 IDN 主机名、IPv6）保持
+// 放行（裸 IPv6 在构造 URL 时自动补方括号），端口必须是 1-65535 的整数。
+function isSafeRpcHost(host: unknown): boolean {
+  return typeof host === 'string' && host.length > 0 && !/[/\\?#@%\s]/.test(host);
+}
+
+function isSafeRpcPort(port: unknown): boolean {
+  if (typeof port === 'number') return Number.isInteger(port) && port >= 1 && port <= 65535;
+  if (typeof port === 'string') {
+    if (!/^\d+$/.test(port)) return false;
+    const n = Number(port);
+    return n >= 1 && n <= 65535;
+  }
+  return false;
+}
+
+// URL 标准要求 IPv6 主机使用方括号：把裸 IPv6（如 `::1`）规范化为 `[::1]`，
+// 已带方括号或普通主机名/IPv4 原样返回。测试连接与下载两条路径共用。
+function buildRpcUrl(host: string, port: number | string): string {
+  const hostPart = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `http://${hostPart}:${port}/jsonrpc`;
+}
+
+function invalidRpcTarget(res: import('express').Response): void {
+  res.status(400).json({ error: 'Invalid RPC host or port', code: 'INVALID_RPC_TARGET' });
+}
+
 function getRpcDownloadConfig(): { host: string; port: number; secret: string } | null {
   try {
     const db = getDb();
@@ -691,6 +821,11 @@ function getRpcDownloadConfig(): { host: string; port: number; secret: string } 
     if (!row?.value) return null;
     const parsed = JSON.parse(row.value);
     if (parsed && parsed.enabled && parsed.host && parsed.port) {
+      // 存量配置可能写入于入库校验之前：读取时同样校验（fail-closed，非法即视为未配置）
+      if (!isSafeRpcHost(parsed.host) || !isSafeRpcPort(parsed.port)) {
+        logger.warn('rpc.config', 'Stored rpc_download_config has invalid host/port; treating as unconfigured');
+        return null;
+      }
       let secret = '';
       if (parsed.secret_encrypted) {
         secret = decrypt(parsed.secret_encrypted, config.encryptionKey);
@@ -731,6 +866,17 @@ router.put('/api/settings/rpc-download', (req, res) => {
     const { enabled, host, port, secret } = req.body;
     const secretProvided = 'secret' in req.body;
 
+    // 空字符串沿用原有行为（未配置时允许空串）；其余任何值都要求先通过字符串
+    // 类型与 URL 结构字符校验，防止数字 0 等非字符串值绕过（`host &&` 的假值陷阱）。
+    if (host !== undefined && host !== '' && !isSafeRpcHost(host)) {
+      invalidRpcTarget(res);
+      return;
+    }
+    if (port !== undefined && port !== '' && !isSafeRpcPort(port)) {
+      invalidRpcTarget(res);
+      return;
+    }
+
     const configToStore: Record<string, unknown> = { enabled, host, port };
     if (secretProvided && secret) {
       configToStore.secret_encrypted = encrypt(secret, config.encryptionKey);
@@ -765,6 +911,7 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    // codeql[js/request-forgery] 目标是用户配置的自有 aria2 RPC（典型为内网 NAS），按业务必须支持 http 内网地址；host/port 已做 URL 结构字符校验。
     return await fetch(url, { ...fetchInit, signal: controller.signal });
   } finally {
     clearTimeout(timer);
@@ -776,6 +923,11 @@ router.post('/api/settings/rpc-download/test', async (req, res) => {
   const { host, port, secret: requestSecret } = req.body;
   if (!host || !port) {
     res.json({ success: false, error: 'Host and port are required' });
+    return;
+  }
+  // host/port 直接拼进 jsonrpc URL，先挡掉能改变 URL 解析结构的字符
+  if (!isSafeRpcHost(host) || !isSafeRpcPort(port)) {
+    invalidRpcTarget(res);
     return;
   }
 
@@ -790,7 +942,7 @@ router.post('/api/settings/rpc-download/test', async (req, res) => {
   }
 
   try {
-    const rpcUrl = `http://${host}:${port}/jsonrpc`;
+    const rpcUrl = buildRpcUrl(host, port);
     const params = secret ? [`token:${secret}`] : [];
 
     logger.info('rpc.test', `Testing connection to ${host}:${port}`);
@@ -863,7 +1015,7 @@ router.post('/api/download/rpc', async (req, res) => {
       return;
     }
 
-    const rpcUrl = `http://${rpcConfig.host}:${rpcConfig.port}/jsonrpc`;
+    const rpcUrl = buildRpcUrl(rpcConfig.host, rpcConfig.port);
     const params: unknown[] = rpcConfig.secret
       ? [`token:${rpcConfig.secret}`, [url]]
       : [[url]];

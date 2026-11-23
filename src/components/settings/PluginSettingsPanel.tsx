@@ -1,24 +1,20 @@
 
 import { TranslateFn } from '../../i18n/useT';
 import React, { useEffect, useState, useSyncExternalStore } from 'react';
-import { AlertTriangle, FolderPlus, Loader2, Plug, RefreshCw, ShieldAlert, Trash2 } from 'lucide-react';
+import { AlertTriangle, FolderPlus, Loader2, Palette, Plug, RefreshCw, ShieldAlert, Trash2 } from 'lucide-react';
 import { useDialog } from '../../hooks/useDialog';
 import { pluginClient } from '../../plugins/pluginClient';
 import { pluginRegistry } from '../../plugins/pluginRegistry';
+import { buildPluginEnablePrompt } from '../../plugins/pluginEnablePrompt';
+import { PluginIcon } from '../../plugins/pluginIcons';
 import { PluginPageViewer } from '../PluginPageViewer';
+import { PluginIconPickerDialog } from './PluginIconPickerDialog';
+import { PluginMarketplaceDialog } from './PluginMarketplaceDialog';
+import { PluginRegistrySection } from './PluginRegistrySection';
+import { PluginUninstallDialog } from './PluginUninstallDialog';
 import type { InstalledPlugin } from '../../plugins/types';
 import { Button } from '../ui/button';
 import { Switch } from '../ui/switch';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '../ui/alert-dialog';
 
 interface PluginSettingsPanelProps {
   t: TranslateFn;
@@ -35,6 +31,9 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
   const [busyPluginId, setBusyPluginId] = useState<string | null>(null);
   const [selectedPage, setSelectedPage] = useState<{ pluginId: string; pageId: string } | null>(null);
   const [uninstallTarget, setUninstallTarget] = useState<InstalledPlugin | null>(null);
+  const [iconPickerTarget, setIconPickerTarget] = useState<InstalledPlugin | null>(null);
+  const [marketplaceOpen, setMarketplaceOpen] = useState(false);
+  const [marketplaceReloadSignal, setMarketplaceReloadSignal] = useState(0);
   const [searchEndpoint, setSearchEndpoint] = useState('');
 
   const refresh = async () => {
@@ -72,24 +71,13 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
   };
 
   const enable = async (plugin: InstalledPlugin) => {
-    const permissions = plugin.manifest.permissions;
-    const permissionText = permissions.length > 0
-      ? permissions.map((permission) => `• ${permission}`).join('\n')
-      : t('pluginSettingsPanel.no-additional-host-permissions');
-    const repositoryDataNotice = permissions.some((permission) =>
-      permission === 'repositories:read' || permission === 'privateRepositories:read')
-      ? t('pluginSettingsPanel.note-repository-read-access-includes-metadata-of')
-      : '';
-    const approved = await confirm(
-      t('pluginSettingsPanel.enable-v1', { v1: plugin.manifest.name }),
-      `${t('pluginSettingsPanel.local-plugins-with-worker-js-have-node-js-access')}\n\n${t('pluginSettingsPanel.requested-permissions')}\n${permissionText}${repositoryDataNotice}`,
-      { confirmText: t('pluginSettingsPanel.confirm-and-enable'), type: 'warning' }
-    );
+    const prompt = buildPluginEnablePrompt(t, plugin.manifest);
+    const approved = await confirm(prompt.title, prompt.message, { confirmText: prompt.confirmText, type: 'warning' });
     if (!approved) return;
 
     setBusyPluginId(plugin.manifest.id);
     try {
-      const result = await pluginRegistry.enable(plugin.manifest.id, permissions);
+      const result = await pluginRegistry.enable(plugin.manifest.id, plugin.manifest.permissions);
       if (!result.success) toast(result.error.message, 'error');
       else toast(t('pluginSettingsPanel.plugin-enabled'), 'success');
     } catch (error) {
@@ -161,6 +149,7 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
   }
 
   const pagePlugin = snapshot.plugins.find((plugin) => plugin.manifest.id === selectedPage?.pluginId);
+
   const page = pagePlugin?.manifest.contributes.pages?.find((item) => item.id === selectedPage?.pageId);
   if (selectedPage && pagePlugin && page) {
     return <PluginPageViewer
@@ -193,6 +182,13 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
           </Button>
         </div>
       </div>
+      {/* 社区插件注册表：入口卡片，插件的浏览/安装与源的管理在市场弹窗里完成 */}
+      <PluginRegistrySection
+        t={t}
+        onOpenMarketplace={() => setMarketplaceOpen(true)}
+        reloadSignal={marketplaceReloadSignal}
+      />
+
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="flex items-center gap-2 text-lg font-semibold">
@@ -238,6 +234,7 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
+                      <PluginIcon pluginId={plugin.manifest.id} className="h-5 w-5 shrink-0 text-muted-foreground" />
                       <h4 className="font-medium">{plugin.manifest.name}</h4>
                       <span className="text-xs text-muted-foreground">v{plugin.manifest.version}</span>
                       <span className={`rounded-full px-2 py-0.5 text-xs ${
@@ -249,6 +246,18 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
                       }`}>
                         {plugin.status === 'active' ? t('pluginSettingsPanel.active') : plugin.status === 'error' ? t('pluginSettingsPanel.error') : t('pluginSettingsPanel.disabled')}
                       </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIconPickerTarget(plugin)}
+                        className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                        aria-label={t('pluginSettingsPanel.customize-icon')}
+                        title={t('pluginSettingsPanel.customize-icon')}
+                      >
+                        <Palette className="mr-1 h-3.5 w-3.5" />
+                        {t('pluginSettingsPanel.customize-icon')}
+                      </Button>
                     </div>
                     <p className="mt-1 break-all text-xs text-muted-foreground">{plugin.manifest.id}</p>
                     {plugin.manifest.description && <p className="mt-2 text-sm text-muted-foreground">{plugin.manifest.description}</p>}
@@ -316,33 +325,30 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
         </div>
       )}
 
-      <AlertDialog open={uninstallTarget !== null} onOpenChange={(open) => { if (!open) setUninstallTarget(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {t('pluginSettingsPanel.uninstall-v1', { v1: uninstallTarget?.manifest.name ?? '' })}
-            </AlertDialogTitle>
-            <AlertDialogDescription className="whitespace-pre-wrap break-all">
-              {t('pluginSettingsPanel.the-installed-plugin-directory-is-deleted-choose')}
-              {uninstallTarget ? `\n\n${uninstallTarget.manifest.id}` : ''}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t('pluginSettingsPanel.cancel')}</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => { if (uninstallTarget) void removePlugin(uninstallTarget, false); }}
-            >
-              {t('pluginSettingsPanel.uninstall-keep-data')}
-            </AlertDialogAction>
-            <AlertDialogAction
-              className="bg-destructive hover:bg-destructive/90"
-              onClick={() => { if (uninstallTarget) void removePlugin(uninstallTarget, true); }}
-            >
-              {t('pluginSettingsPanel.uninstall-and-delete-data')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <PluginUninstallDialog
+        target={uninstallTarget}
+        t={t}
+        onClose={() => setUninstallTarget(null)}
+        onUninstall={(removePluginData) => {
+          if (uninstallTarget) void removePlugin(uninstallTarget, removePluginData);
+        }}
+      />
+
+      <PluginIconPickerDialog
+        target={iconPickerTarget}
+        t={t}
+        onClose={() => setIconPickerTarget(null)}
+      />
+
+      <PluginMarketplaceDialog
+        isOpen={marketplaceOpen}
+        onClose={() => {
+          setMarketplaceOpen(false);
+          // 源数量/插件统计可能在弹窗里被改动，关闭时让入口卡片重读本地状态。
+          setMarketplaceReloadSignal((signal) => signal + 1);
+        }}
+        t={t}
+      />
     </div>
   );
 };

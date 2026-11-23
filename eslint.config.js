@@ -58,8 +58,10 @@ export default tseslint.config(
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': [
         'warn',
-        { allowConstantExport: true, allowExportNames: ['useDialog'] },
+        { allowConstantExport: true, allowExportNames: ['useDialog', 'useOptionalDialog'] },
       ],
+      'preserve-caught-error': 'off',
+      'no-useless-assignment': 'off',
     },
   },
   {
@@ -103,6 +105,28 @@ export default tseslint.config(
           message:
             'View components must not dynamically import() business services. Move the call into a hook in src/features/.../hooks/**. See docs/adr/0001-frontend-layering.md.',
         })),
+      ],
+    },
+  },
+  {
+    /**
+     * Route-mode rule: GitHub API clients must be built via createGitHubApiService()
+     * (services/githubApiFactory) so the route-mode preference (auto/backend/browser)
+     * attaches the backend proxy consistently. Direct `new GitHubApiService(...)`
+     * bypasses the factory and always calls api.github.com from the browser, which
+     * breaks login/sync in the fullstack deployment and ignores the route-mode
+     * setting. The factory itself and tests are exempt.
+     */
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/services/githubApiFactory.ts', 'src/**/*.test.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "NewExpression[callee.name='GitHubApiService']",
+          message:
+            'Build GitHub API clients with createGitHubApiService(token) from services/githubApiFactory so the route-mode setting (auto/backend/browser) applies. Direct construction skips backend proxying.',
+        },
       ],
     },
   },

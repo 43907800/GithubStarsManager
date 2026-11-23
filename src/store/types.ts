@@ -5,6 +5,7 @@ import type {
   Gist,
   GistCategoryId,
   GistSearchFilters,
+  ThemeMode,
   Repository,
   Release,
   ForkRepo,
@@ -26,6 +27,7 @@ import type {
   DiscoveryChannelId,
   DiscoveryRepo,
   DiscoveryPlatform,
+  ExternalFeedKind,
   ProgrammingLanguage,
   SortBy,
   SortOrder,
@@ -40,7 +42,10 @@ import type {
   SyncMode,
   TranslationEngine,
   RepositoryCardFieldId,
+  RepositoryCardActionPreference,
   RepositoryChatSettings,
+  ThemeTokens,
+  TrendingSnapshot,
 } from '../types';
 import type { ThemePresetId } from '../constants/themePresets';
 import type { GitHubListsApiService } from '../services/githubListsApi';
@@ -62,7 +67,7 @@ export interface AppActions {
   setLastSync: (timestamp: string) => void;
   setSyncMode: (mode: SyncMode) => void;
   setSyncModeConfigured: (configured: boolean) => void;
-  pushCategoriesToLists: (api: GitHubListsApiService) => Promise<void>;
+  pushCategoriesToLists: (api: GitHubListsApiService, categoryIds?: string[]) => Promise<void>;
   resetListsPush: () => void;
   setListsPushError: (error: string | null) => void;
   setCategoryListIdMap: (categoryId: string, listId: string) => void;
@@ -169,12 +174,15 @@ export interface AppActions {
   deleteAssetFilter: (id: string) => void;
 
   // UI actions
-  setTheme: (theme: 'light' | 'dark') => void;
-  setThemePreset: (preset: ThemePresetId) => void;
+  setThemeMode: (mode: ThemeMode) => void;
+  setSystemTheme: (systemTheme: 'light' | 'dark') => void;
+  setThemePresetLight: (preset: ThemePresetId) => void;
+  setThemePresetDark: (preset: ThemePresetId) => void;
   setCurrentView: (view: 'repositories' | 'gists' | 'releases' | 'forks' | 'settings' | 'subscription') => void;
   setSelectedCategory: (category: string) => void;
   setLanguage: (language: AppLanguage) => void;
   setTranslationEngine: (engine: TranslationEngine) => void;
+  setAutoTranslateRepoDescription: (enabled: boolean) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setReadmeModalOpen: (open: boolean) => void;
   setHeaderMenuConfig: (config: HeaderMenuItem[]) => void;
@@ -185,6 +193,8 @@ export interface AppActions {
   // Update actions
   setUpdateNotification: (notification: UpdateNotification | null) => void;
   dismissUpdateNotification: () => void;
+  setAutoUpdateCheckEnabled: (enabled: boolean) => void;
+  setUpdatePromptDismissedVersion: (version: string | null) => void;
 
   // Update Analysis Progress
   setAnalysisProgress: (newProgress: AnalysisProgress) => void;
@@ -237,11 +247,17 @@ export interface AppActions {
   setDiscoveryLastRefresh: (channel: DiscoveryChannelId, timestamp: string) => void;
   updateDiscoveryRepo: (repo: DiscoveryRepo) => void;
   toggleDiscoveryChannel: (channelId: DiscoveryChannelId) => void;
+  addExternalDiscoveryChannel: (name: string, sourceUrl: string, kind?: ExternalFeedKind) => DiscoveryChannelId | null;
+  removeExternalDiscoveryChannel: (channelId: DiscoveryChannelId) => void;
   setDiscoveryPlatform: (platform: DiscoveryPlatform) => void;
   setDiscoveryLanguage: (language: ProgrammingLanguage) => void;
   setDiscoverySortBy: (sortBy: SortBy) => void;
   setDiscoverySortOrder: (sortOrder: SortOrder) => void;
   setDiscoverySearchQuery: (query: string) => void;
+  setDiscoverySearchMode: (mode: 'keyword' | 'semantic') => void;
+  setDiscoverySearchPhase: (phase: string | null) => void;
+  setDiscoverySearchPhaseDetail: (detail: string | null) => void;
+  setDiscoverySearchEmptyReason: (reason: 'recall_empty' | 'ai_empty' | null) => void;
   setDiscoverySelectedTopic: (topic: TopicCategory | null) => void;
   setDiscoveryHasMore: (channel: DiscoveryChannelId, hasMore: boolean) => void;
   setDiscoveryNextPage: (channel: DiscoveryChannelId, page: number) => void;
@@ -263,9 +279,16 @@ export interface AppActions {
   removeTelegramFollow: (channel: string) => void;
   appendDiscoveryRepos: (channel: DiscoveryChannelId, repos: DiscoveryRepo[]) => void;
 
+  // Theme tokens（开发守则 §14）
+  /** 局部更新：内部与当前值合并，调用方不必自己展开（避免拿到过期的渲染值）。 */
+  updateThemeTokens: (patch: Partial<ThemeTokens>) => void;
+  /** Trending 快照（开发守则 §7）：记一份榜单快照，去重与上限在 utils 里处理。 */
+  recordTrendingSnapshot: (snapshot: TrendingSnapshot) => void;
   // 仓库卡片可见字段（开发守则 §14）
   /** 切换某个字段的显示；未提供的字段沿用当前值。 */
   setRepositoryCardField: (id: RepositoryCardFieldId, visible: boolean) => void;
+  setRepositoryCardActions: (actions: RepositoryCardActionPreference[]) => void;
+  setPluginCustomIcon: (pluginId: string, icon: string | null) => void;
 }
 
 export type AppStoreState = AppState & AppActions;

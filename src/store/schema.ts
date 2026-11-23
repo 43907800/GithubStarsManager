@@ -64,6 +64,7 @@ export type PersistedAppState = Partial<
     | 'aiConfigs'
     | 'activeAIConfig'
     | 'repositoryChatSettings'
+    | 'themeTokens'
     | 'embeddingConfigs'
     | 'activeEmbeddingConfig'
     | 'vectorSearchConfig'
@@ -80,13 +81,20 @@ export type PersistedAppState = Partial<
     | 'collapsedSidebarCategoryCount'
     | 'categoryMatchMode'
     | 'assetFilters'
+    | 'trendingSnapshots'
     | 'repositoryCardFields'
-    | 'theme'
-    | 'themePreset'
+    | 'repositoryCardActions'
+    | 'pluginCustomIcons'
+    | 'themeMode'
+    | 'themePresetLight'
+    | 'themePresetDark'
     | 'currentView'
     | 'selectedCategory'
     | 'language'
     | 'translationEngine'
+    | 'autoTranslateRepoDescription'
+    | 'autoUpdateCheckEnabled'
+    | 'updatePromptDismissedVersion'
     | 'searchFilters'
     | 'isSidebarCollapsed'
     | 'repositoryViewMode'
@@ -180,7 +188,9 @@ export const normalizeRepositoryChatSettings = (value: unknown): RepositoryChatS
     streamingMode: record.streamingMode === 'off' ? 'off' : 'auto',
     taskDepth,
     enableWebTools: record.enableWebTools === true,
+    fastPath: record.fastPath !== false,
     enableAgentToolLoop: record.enableAgentToolLoop === true,
+    layout: record.layout === 'fullscreen' ? 'fullscreen' : 'sheet',
     retainSessionDays,
     maxToolsPerTurn: maxToolCalls,
     agentBudget,

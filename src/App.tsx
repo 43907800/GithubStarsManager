@@ -1,28 +1,34 @@
-import React, { Suspense, useEffect, useMemo, useCallback } from 'react';
+import React, { Suspense, useEffect, useLayoutEffect, useMemo, useCallback, useDeferredValue } from 'react';
 import { LoginScreen } from './components/LoginScreen';
 import { Header } from './components/Header';
 import { SearchBar } from './components/SearchBar';
 import { RepositoryList } from './components/RepositoryList';
 import { CategorySidebar } from './components/CategorySidebar';
+import { WorkspacePageHeader } from './components/WorkspacePageHeader';
 
 import { DebugModeIndicator } from './components/DebugModeIndicator';
 
 import { BackToTop } from './components/BackToTop';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SyncModeChoiceModal } from './components/SyncModeChoiceModal';
-import { useAppStore } from './store/useAppStore';
-import { selectAppShellState } from './store/selectors';
+import { useAppStore, getAllCategories } from './store/useAppStore';
+import { useSystemThemeSync } from './hooks/useSystemThemeSync';
+import { resolveTheme, selectAppShellState } from './store/selectors';
 import { useShallow } from 'zustand/react/shallow';
 import { applyThemePreset } from './lib/themePresets';
+import { applyThemeTokens } from './utils/themeTokens';
 import { changeAppLanguage } from './i18n';
 import { useAutoUpdateCheck } from './hooks/useAutoUpdateCheck';
 import { logger } from './services/logger';
 import { UpdateNotificationBanner } from './components/UpdateNotificationBanner';
 import { ListsPushIndicator } from './components/ListsPushIndicator';
+import { PluginPageHost } from './components/PluginPageHost';
 import { useBackendLifecycle } from './features/lifecycle/hooks/useBackendLifecycle';
 import type { AppState } from './types';
 import { hasActiveSearchFilters } from './utils/repoSearch';
 import { isElectron, loadEncryptedXAuthViaDesktop } from './services/electronProxy';
+import { useT } from './i18n/useT';
+import { matchesCategory } from './utils/categoryUtils';
 
 const LazyReleaseTimeline = React.lazy(() =>
   import('./components/ReleaseTimeline').then((module) => ({ default: module.ReleaseTimeline }))
@@ -46,10 +52,11 @@ const ViewLoadingFallback: React.FC = () => (
   </div>
 );
 
+// 懒视图只保留错误边界。Suspense 上移到 App 视图容器的外层：这样懒模块
+// 加载期间整个淡入容器都不挂载，动画在目标内容真正提交时才开始播放，
+// 而不是先在 loading 占位上播完。
 const LazyViewBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <ErrorBoundary>
-    <Suspense fallback={<ViewLoadingFallback />}>{children}</Suspense>
-  </ErrorBoundary>
+  <ErrorBoundary>{children}</ErrorBoundary>
 );
 
 /**
@@ -69,16 +76,52 @@ const RepositoriesView = React.memo(({
   selectedCategory: string;
   onCategorySelect: (category: string) => void;
 }) => {
+  const t = useT('app');
   const isActive = hasActiveSearchFilters(searchFilters);
   const similarView = useAppStore((state) => state.similarView);
   const exitSimilarView = useAppStore((state) => state.exitSimilarView);
+  const {
+    language,
+    customCategories,
+    hiddenDefaultCategoryIds,
+    defaultCategoryOverrides,
+    categoryMatchMode,
+  } = useAppStore(useShallow((state) => ({
+    language: state.language,
+    customCategories: state.customCategories,
+    hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
+    defaultCategoryOverrides: state.defaultCategoryOverrides,
+    categoryMatchMode: state.categoryMatchMode,
+  })));
+  const allCategories = useMemo(
+    () => getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides),
+    [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides]
+  );
+  const currentCategory = allCategories.find((category) => category.id === selectedCategory);
+  const currentCategoryRepositories = useMemo(() => {
+    if (selectedCategory === 'all') return repositories;
+    const category = allCategories.find((item) => item.id === selectedCategory);
+    return category
+      ? repositories.filter((repository) => matchesCategory(repository, category, categoryMatchMode))
+      : [];
+  }, [repositories, selectedCategory, allCategories, categoryMatchMode]);
+  const analyzedRepositoryCount = currentCategoryRepositories.filter(
+    (repository) => repository.analyzed_at && !repository.analysis_failed
+  ).length;
+  // Similar view preserves the user's sort preference, which is not a search
+  // filter and must not trigger the "search takes precedence" exit.
+  const hasActiveQueryOrFilter = hasActiveSearchFilters({
+    ...searchFilters,
+    sortBy: 'stars',
+    sortOrder: 'desc',
+  });
 
   // 相似视图下用户发起搜索时，自动退出相似视图（搜索优先于相似浏览，避免界面歧义）
   useEffect(() => {
-    if (similarView?.active && isActive) {
+    if (similarView?.active && hasActiveQueryOrFilter) {
       exitSimilarView();
     }
-  }, [similarView?.active, isActive, exitSimilarView]);
+  }, [similarView?.active, hasActiveQueryOrFilter, exitSimilarView]);
 
   // 相似仓库视图激活时，列表数据源切换为相似结果，且忽略分类过滤
   const listRepositories = similarView?.active
@@ -86,13 +129,32 @@ const RepositoriesView = React.memo(({
     : (isActive ? searchResults : repositories);
 
   return (
-    <div className="flex flex-col gap-4 lg:flex-row lg:gap-6">
+    <div className="route-workspace">
       <CategorySidebar
         repositories={repositories}
         selectedCategory={selectedCategory}
         onCategorySelect={onCategorySelect}
       />
-      <div className="flex-1 space-y-6">
+      <div className="workspace-content app-workspace-content space-y-5">
+        <WorkspacePageHeader
+          eyebrow={t('categorySidebar.workspace-label')}
+          section={t('header.menu-repositories')}
+          title={selectedCategory === 'all'
+            ? t('categorySidebar.all-repositories')
+            : currentCategory?.name ?? t('categorySidebar.all-repositories')}
+          meta={(
+            <>
+              <span className="app-workspace-meta-pill">
+                {t('categorySidebar.repository-count', { count: currentCategoryRepositories.length })}
+              </span>
+              {analyzedRepositoryCount > 0 && (
+                <span className="app-workspace-meta-pill">
+                  {t('searchResultStats.ai-analyzed-count', { count: analyzedRepositoryCount })}
+                </span>
+              )}
+            </>
+          )}
+        />
         <SearchBar />
         <RepositoryList
           repositories={listRepositories}
@@ -132,11 +194,7 @@ const SettingsView = React.memo(() => (
 ));
 SettingsView.displayName = 'SettingsView';
 
-const DiscoverySubscriptionView = React.memo(() => (
-  <Suspense fallback={<ViewLoadingFallback />}>
-    <LazyDiscoveryView />
-  </Suspense>
-));
+const DiscoverySubscriptionView = React.memo(() => <LazyDiscoveryView />);
 DiscoverySubscriptionView.displayName = 'DiscoverySubscriptionView';
 
 function App() {
@@ -144,8 +202,11 @@ function App() {
     isAuthenticated,
     currentView,
     selectedCategory,
-    theme,
-    themePreset,
+    themeMode,
+    systemTheme,
+    themePresetLight,
+    themePresetDark,
+    themeTokens,
     language,
     hasHydrated,
     searchResults,
@@ -156,6 +217,9 @@ function App() {
 
   useAutoUpdateCheck();
   useBackendLifecycle(hasHydrated);
+
+  const theme = resolveTheme(themeMode, systemTheme);
+  useSystemThemeSync(themeMode);
 
   // Restore persisted frontend debug level at startup so capture is active
   // app-wide, not only after DiagnosticLogsPanel mounts.
@@ -203,10 +267,29 @@ function App() {
     };
   }, [theme]);
 
-  // Theme preset (palette/radius/font/shadow skin) rides on data-theme.
+  // Theme preset (palette/radius/font/shadow skin) rides on data-theme;
+  // 深浅模式可分别配置，随解析出的主题切换生效。
+  const activeThemePreset = theme === 'dark' ? themePresetDark : themePresetLight;
   useEffect(() => {
-    applyThemePreset(themePreset);
-  }, [themePreset]);
+    applyThemePreset(activeThemePreset);
+  }, [activeThemePreset]);
+
+  // Theme token（开发守则 §14）：内联 CSS 变量覆盖预设；恢复默认时删掉内联值，
+  // 预设的 --radius / --primary 自然重新生效。排在预设 effect 之后即可。
+  useEffect(() => {
+    applyThemeTokens(themeTokens);
+  }, [themeTokens, theme, activeThemePreset]);
+
+  // 视图切换并发渲染：切换瞬间先保留旧视图画面，新视图在低优先级渲染完
+  // 再一次性提交，避免重视图（几百张卡片）同步挂载造成的长帧卡顿。
+  const deferredView = useDeferredValue(currentView);
+
+  // 滚动重置跟随 deferredView：新视图提交的同一帧再回顶，避免旧视图
+  // 还在屏上时滚动先跳、新内容后到的闪跳。用布局 effect 保证复位发生在
+  // 新内容绘制之前（reduced-motion 下没有淡入遮盖位置跳变）。
+  useLayoutEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [deferredView]);
 
   // Language side effect: zustand 的 language 是唯一事实源，这里只负责装载
   // 语言包、切换 i18next 并同步 <html lang>。
@@ -223,7 +306,7 @@ function App() {
   }, [setSelectedCategory]);
 
   const currentViewContent = useMemo(() => {
-    switch (currentView) {
+    switch (deferredView) {
       case 'repositories':
         return (
           <RepositoriesView
@@ -251,7 +334,7 @@ function App() {
       default:
         return null;
     }
-  }, [currentView, repositories, searchResults, searchFilters, selectedCategory, handleCategorySelect]);
+  }, [deferredView, repositories, searchResults, searchFilters, selectedCategory, handleCategorySelect]);
 
   // Show loading state while store is hydrating to ensure correct theme is applied
   if (!hasHydrated) {
@@ -272,13 +355,22 @@ function App() {
     <div className="ui-shell min-h-screen transition-colors duration-200">
       <UpdateNotificationBanner />
       <Header />
-      <main className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7">
-        {currentViewContent}
+      <main className="app-main">
+        {/* key 化包裹层：视图切换时重挂载并重放 200ms 淡入，消除硬切的突兀感。
+            只动 opacity（transform 动画期间会为 fixed 后代创建 containing block）。
+            Suspense 在容器外层：懒加载 fallback 不在淡入容器内，动画等目标
+            内容真正提交时才开始。切换是低优先级更新，期间旧视图保持可见。 */}
+        <Suspense fallback={<ViewLoadingFallback />}>
+          <div key={deferredView} className="motion-safe:animate-fade-in">
+            {currentViewContent}
+          </div>
+        </Suspense>
       </main>
       <BackToTop />
       <DebugModeIndicator />
       <SyncModeChoiceModal />
       <ListsPushIndicator />
+      <PluginPageHost />
     </div>
   );
 }

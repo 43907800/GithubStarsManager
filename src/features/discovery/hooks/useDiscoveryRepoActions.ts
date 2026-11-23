@@ -5,9 +5,10 @@ import type { DiscoveryRepo, Repository } from '../../../types';
 import { useAppStore, getAllCategories } from '../../../store/useAppStore';
 import { analyzeRepository, createFailedAnalysisResult } from '../../../services/aiAnalysisHelper';
 import { forceSyncToBackend } from '../../../services/autoSync';
-import { GitHubApiService } from '../../../services/githubApi';
+import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { useDialog } from '../../../hooks/useDialog';
 import { applyDiscoveryAnalysisFailure, applyDiscoveryAnalysisSuccess } from '../../repositories/application/discoveryRepoPatches';
+import { findIdentityMatch } from '../../../utils/repositoryIdentity';
 
 export interface UseDiscoveryRepoActionsOptions {
   repo: DiscoveryRepo;
@@ -73,10 +74,13 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
     };
   }, []);
 
-  // 检查仓库是否已在本地存在（已被Star）
+  // 检查仓库是否已在本地存在（已被Star）。
+  // 必须按 GitHub 身份判定（id 优先，合成 id 的名称兜底），不能只比 full_name：
+  // 旧仓库被改名/删除后，其旧名可能被另一个仓库复用，仅比名称会把后者误判为
+  // 已 Star，从而挡住用户 Star 它的操作。
   const isStarredComputed = useMemo(() => {
-    return repositories.some(r => r.full_name === repo.full_name);
-  }, [repositories, repo.full_name]);
+    return findIdentityMatch(repo, repositories) !== undefined;
+  }, [repositories, repo]);
 
   // 优先使用乐观状态，否则使用计算状态
   const isStarred = optimisticStarred !== null ? optimisticStarred : isStarredComputed;
@@ -89,7 +93,7 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
     setIsStarring(true);
 
     try {
-      const githubApi = new GitHubApiService(githubToken);
+      const githubApi = createGitHubApiService(githubToken);
       const [owner, name] = repo.full_name.split('/');
 
       // 乐观更新：立即更新UI状态
@@ -97,8 +101,11 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
 
       await githubApi.unstarRepository(owner, name);
 
-      // 从本地删除
-      const existingRepo = repositories.find(r => r.full_name === repo.full_name);
+      // 从本地删除。
+      // 必须按 GitHub 身份定位待删记录：只比 full_name 会删错 ——
+      // 旧仓库改名/删除后其旧名被另一个仓库复用时，命中的是旧记录，
+      // 结果删掉无关记录而真正取消 Star 的那条仍留在库里。
+      const existingRepo = findIdentityMatch(repo, repositories);
       if (existingRepo) {
         deleteRepository(existingRepo.id);
       }
@@ -125,7 +132,7 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
     setIsStarring(true);
 
     try {
-      const githubApi = new GitHubApiService(githubToken);
+      const githubApi = createGitHubApiService(githubToken);
       const [owner, name] = repo.full_name.split('/');
 
       // 乐观更新：立即更新UI状态

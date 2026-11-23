@@ -2,8 +2,13 @@ import { Router } from 'express';
 import { getDb } from '../db/connection.js';
 import { encrypt, decrypt } from '../services/crypto.js';
 import { config } from '../config.js';
+import { toDisplayPref, DESCRIPTION_DISPLAY_VALUES, TAGS_DISPLAY_VALUES } from './repositories.js';
 
 const router = Router();
+
+// 控制字符或 Latin-1 以外的码位会被 undici 拒绝，直接拒绝存储
+const sanitizeUserAgent = (value: unknown): string | null =>
+  typeof value === 'string' && !/[^\u0020-\u007e\u00a0-\u00ff]/.test(value) ? value : null;
 
 /** 与前端 NOASSERTION_KEYS 对齐：空白 / NOASSERTION / Other / none 等落 null。 */
 const NO_LICENSE_KEYS = new Set(['', 'noassertion', 'other', 'none', 'no-license']);
@@ -162,8 +167,9 @@ router.post('/api/sync/import', (req, res) => {
             owner_login, owner_avatar_url, topics,
             ai_summary, ai_tags, ai_platforms, analyzed_at, analysis_failed,
             custom_description, custom_tags, custom_category, category_locked, last_edited,
-            subscribed_to_releases, vector_indexed_at, license, vector_indexed_license
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            subscribed_to_releases, vector_indexed_at, license, vector_indexed_license,
+            description_display, tags_display
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const r of repos) {
           // 验证必需的字段
@@ -201,7 +207,8 @@ router.post('/api/sync/import', (req, res) => {
             typeof r.ai_platforms === 'string' ? r.ai_platforms : JSON.stringify(r.ai_platforms ?? []),
             r.analyzed_at ?? null, r.analysis_failed ? 1 : 0,
             r.custom_description ?? null,
-            typeof r.custom_tags === 'string' ? r.custom_tags : JSON.stringify(r.custom_tags ?? []),
+            // NULL 表示「未自定义」，只有显式数组才写 '[]'（明确清空），避免恢复后隐藏标签。
+            typeof r.custom_tags === 'string' ? r.custom_tags : (r.custom_tags == null ? null : JSON.stringify(r.custom_tags)),
             r.custom_category ?? null, (r.category_locked === true || r.category_locked === 1) ? 1 : 0, r.last_edited ?? null,
             r.subscribed_to_releases ? 1 : 0,
             r.vector_indexed_at ?? null,
@@ -209,6 +216,8 @@ router.post('/api/sync/import', (req, res) => {
             // INSERT OR REPLACE 会整行替换，故备份无此列时落 null（影响：增量谓词会
             // 触发一次重索引回填指纹），合预期。
             vectorIndexedLicense
+            , toDisplayPref(r.description_display, DESCRIPTION_DISPLAY_VALUES)
+            , toDisplayPref(r.tags_display, TAGS_DISPLAY_VALUES)
           );
         }
         counts.repositories = repos.length;
@@ -350,12 +359,17 @@ router.post('/api/sync/import', (req, res) => {
           const existing = db.prepare('SELECT password_encrypted FROM webdav_configs WHERE id = ?').get(c.id) as Record<string, unknown> | undefined;
           const existingPwd = (existing?.password_encrypted as string) ?? null;
           db.prepare(`
-            INSERT OR REPLACE INTO webdav_configs (id, name, url, username, password_encrypted, path, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO webdav_configs (id, name, url, username, password_encrypted, path, is_active, custom_user_agent)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             c.id, c.name ?? '', c.url ?? '', c.username ?? '',
             existingPwd,
-            c.path ?? '/', (c.is_active ?? c.isActive) ? 1 : 0
+            c.path ?? '/', (c.is_active ?? c.isActive) ? 1 : 0,
+            sanitizeUserAgent(
+              typeof c.custom_user_agent === 'string' ? c.custom_user_agent
+              : typeof c.customUserAgent === 'string' ? c.customUserAgent
+              : undefined
+            )
           );
         }
         counts.webdav_configs = webdavConfigs.length;

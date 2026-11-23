@@ -10,6 +10,7 @@ import { telegramStorage } from '../../services/telegramStorage';
 import { abortXTweetSync } from '../../services/xTweetService';
 import { abortTelegramSync } from '../../services/telegramService';
 import { clearEncryptedXAuthViaDesktop } from '../../services/electronProxy';
+import { normalizeAssetFilters } from '../../utils/assetFilters';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -34,7 +35,6 @@ import {
   Trash2,
   AlertTriangle,
   Database,
-  Github,
   Tag,
   Bot,
   Cloud,
@@ -53,11 +53,13 @@ import {
   RefreshCw,
   Rss,
 } from 'lucide-react';
+import { Github } from '../ui/brand-icons';
 import { useAppStore } from '../../store/useAppStore';
+import { removePersistedSnapshot } from '../../store/persistence/storage';
+import { normalizePluginCustomIcons } from '../../store/normalizers/persistedState';
 import { useShallow } from 'zustand/react/shallow';
 import { isThemePresetId } from '../../constants/themePresets';
 import type { ThemePresetId } from '../../constants/themePresets';
-import { indexedDBStorage } from '../../services/indexedDbStorage';
 import { IncludeKeysToggle } from './IncludeKeysToggle';
 import type { 
   Repository, 
@@ -136,13 +138,17 @@ interface ExportData {
     defaultCategoryOverrides?: Record<string, Partial<Category>>;
     categoryOrder?: string[];
     theme?: 'light' | 'dark';
+    themeMode?: 'light' | 'dark' | 'system';
     themePreset?: ThemePresetId;
+    themePresetLight?: ThemePresetId;
+    themePresetDark?: ThemePresetId;
     language?: AppLanguage;
     isSidebarCollapsed?: boolean;
     releaseViewMode?: 'timeline' | 'repository';
     releaseSelectedFilters?: string[];
     releaseSearchQuery?: string;
     releaseExpandedRepositories?: number[];
+    pluginCustomIcons?: Record<string, string>;
     proxyConfig?: ProxyConfig;
     rpcDownloadConfig?: RpcDownloadConfig;
     backendApiSecret?: string | null;
@@ -180,13 +186,17 @@ const hasMaskedSecrets = (data: ExportData['data']): boolean => {
 
 const UI_SETTINGS_DATA_KEYS = [
   'theme',
+  'themeMode',
   'themePreset',
+  'themePresetLight',
+  'themePresetDark',
   'language',
   'isSidebarCollapsed',
   'releaseViewMode',
   'releaseSelectedFilters',
   'releaseSearchQuery',
   'releaseExpandedRepositories',
+  'pluginCustomIcons',
   'proxyConfig',
   'rpcDownloadConfig',
   'backendApiSecret',
@@ -366,9 +376,14 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
     // Clear sessionStorage - only remove app-owned keys
     APP_SESSIONSTORAGE_KEYS.forEach((key) => sessionStorage.removeItem(key));
 
-    // Clear IndexedDB - only remove the specific database used by this app
+    // Clear IndexedDB - only remove the specific database used by this app.
+    // 走持久化层的串行删除：除磁盘清扫外，还会在串行写链上取消待写、完成删除并
+    // 重置分片判脏簿记——直接调底层 removeItem 会让随后的 store 重置写入以过期
+    // 基准判脏，只补写部分分片，而 meta 仍声明全部分片。
+    // 必须 await 删除真正落盘（zustand v4 的 clearStorage 不回传 Promise）：
+    // 若链上还有排队的大写入，2 秒后的 reload 可能早于删除提交，数据复活。
     try {
-      await indexedDBStorage.removeItem('github-stars-manager');
+      await removePersistedSnapshot(useAppStore.persist.getOptions().name ?? 'github-stars-manager');
     } catch (error) {
       console.error('Failed to clear IndexedDB', error);
       throw new Error('IndexedDB clear failed');
@@ -673,14 +688,16 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
         exportDataObj.data.searchFilters = store.searchFilters;
       }
       if (selectedTypes.includes('uiSettings')) {
-        exportDataObj.data.theme = store.theme;
-        exportDataObj.data.themePreset = store.themePreset;
+        exportDataObj.data.themeMode = store.themeMode;
+        exportDataObj.data.themePresetLight = store.themePresetLight;
+        exportDataObj.data.themePresetDark = store.themePresetDark;
         exportDataObj.data.language = store.language;
         exportDataObj.data.isSidebarCollapsed = store.isSidebarCollapsed;
         exportDataObj.data.releaseViewMode = store.releaseViewMode;
         exportDataObj.data.releaseSelectedFilters = store.releaseSelectedFilters;
         exportDataObj.data.releaseSearchQuery = store.releaseSearchQuery;
         exportDataObj.data.releaseExpandedRepositories = Array.from(store.releaseExpandedRepositories);
+        exportDataObj.data.pluginCustomIcons = store.pluginCustomIcons;
       }
 
       // Export special configs (proxy, RPC, backend secret) only when uiSettings is selected
@@ -787,8 +804,8 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
             useAppStore.setState({ categoryOrder: importedData.categoryOrder });
           }
         }
-        if (selectedTypes.includes('assetFilters') && importedData.assetFilters) {
-          useAppStore.setState({ assetFilters: importedData.assetFilters });
+        if (selectedTypes.includes('assetFilters') && Array.isArray(importedData.assetFilters)) {
+          useAppStore.setState({ assetFilters: normalizeAssetFilters(importedData.assetFilters) });
         }
         if (selectedTypes.includes('discoveryRepos')) {
           if (importedData.discoveryRepos) {
@@ -837,11 +854,23 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
           });
         }
         if (selectedTypes.includes('uiSettings')) {
-          if (importedData.theme === 'light' || importedData.theme === 'dark') {
-            useAppStore.setState({ theme: importedData.theme });
+          const importedMode = importedData.themeMode === 'light' || importedData.themeMode === 'dark' || importedData.themeMode === 'system'
+            ? importedData.themeMode
+            : (importedData.theme === 'light' || importedData.theme === 'dark' ? importedData.theme : null);
+          if (importedMode) {
+            useAppStore.getState().setThemeMode(importedMode);
           }
-          if (isThemePresetId(importedData.themePreset)) {
-            useAppStore.getState().setThemePreset(importedData.themePreset);
+          const importedPresetLight = isThemePresetId(importedData.themePresetLight)
+            ? importedData.themePresetLight
+            : (isThemePresetId(importedData.themePreset) ? importedData.themePreset : null);
+          const importedPresetDark = isThemePresetId(importedData.themePresetDark)
+            ? importedData.themePresetDark
+            : (isThemePresetId(importedData.themePreset) ? importedData.themePreset : null);
+          if (importedPresetLight) {
+            useAppStore.getState().setThemePresetLight(importedPresetLight);
+          }
+          if (importedPresetDark) {
+            useAppStore.getState().setThemePresetDark(importedPresetDark);
           }
           if (importedData.language) {
             useAppStore.setState({ language: importedData.language });
@@ -860,6 +889,11 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
           }
           if (importedData.releaseExpandedRepositories) {
             useAppStore.setState({ releaseExpandedRepositories: new Set(importedData.releaseExpandedRepositories) });
+          }
+          if (importedData.pluginCustomIcons !== undefined) {
+            useAppStore.setState({
+              pluginCustomIcons: normalizePluginCustomIcons(importedData.pluginCustomIcons),
+            });
           }
         }
 
@@ -947,9 +981,10 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
             });
           }
         }
-        if (selectedTypes.includes('assetFilters') && importedData.assetFilters) {
+        if (selectedTypes.includes('assetFilters') && Array.isArray(importedData.assetFilters)) {
           const existingIds = new Set(store.assetFilters.map(f => f.id));
-          const newFilters = importedData.assetFilters.filter(f => !existingIds.has(f.id));
+          const newFilters = normalizeAssetFilters(importedData.assetFilters)
+            .filter(f => !existingIds.has(f.id));
           useAppStore.setState({ assetFilters: [...store.assetFilters, ...newFilters] });
         }
         if (selectedTypes.includes('discoveryRepos')) {
@@ -1041,12 +1076,24 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
         if (selectedTypes.includes('uiSettings')) {
           const importedUiSettings = importedData;
           const currentStore = useAppStore.getState();
+          const importedMode = importedUiSettings.themeMode === 'light' || importedUiSettings.themeMode === 'dark' || importedUiSettings.themeMode === 'system'
+            ? importedUiSettings.themeMode
+            : (importedUiSettings.theme === 'light' || importedUiSettings.theme === 'dark' ? importedUiSettings.theme : null);
+          const importedPresetLight = isThemePresetId(importedUiSettings.themePresetLight)
+            ? importedUiSettings.themePresetLight
+            : (isThemePresetId(importedUiSettings.themePreset) ? importedUiSettings.themePreset : null);
+          const importedPresetDark = isThemePresetId(importedUiSettings.themePresetDark)
+            ? importedUiSettings.themePresetDark
+            : (isThemePresetId(importedUiSettings.themePreset) ? importedUiSettings.themePreset : null);
           useAppStore.setState({
-            ...(importedUiSettings.theme === 'light' || importedUiSettings.theme === 'dark'
-              ? { theme: importedUiSettings.theme }
+            ...(importedMode
+              ? { themeMode: importedMode }
               : {}),
-            ...(isThemePresetId(importedUiSettings.themePreset)
-              ? { themePreset: importedUiSettings.themePreset }
+            ...(importedPresetLight
+              ? { themePresetLight: importedPresetLight }
+              : {}),
+            ...(importedPresetDark
+              ? { themePresetDark: importedPresetDark }
               : {}),
             ...(importedUiSettings.language ? { language: importedUiSettings.language } : {}),
             ...(typeof importedUiSettings.isSidebarCollapsed === 'boolean'
@@ -1063,6 +1110,14 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
               : {}),
             ...(importedUiSettings.releaseExpandedRepositories
               ? { releaseExpandedRepositories: new Set(importedUiSettings.releaseExpandedRepositories) }
+              : {}),
+            ...(importedUiSettings.pluginCustomIcons !== undefined
+              ? {
+                  pluginCustomIcons: {
+                    ...currentStore.pluginCustomIcons,
+                    ...normalizePluginCustomIcons(importedUiSettings.pluginCustomIcons),
+                  },
+                }
               : {}),
           });
           if (importedUiSettings.proxyConfig) {
@@ -1637,8 +1692,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
           {t('dataManagementPanel.data-export-import')}
         </h3>
 
-        {/* Include Keys Toggle - Independent Container */}
-        <div className="mb-4 p-6 bg-card dark:bg-card rounded-lg border border-border dark:border-border">
+        <div className="mb-4">
           <IncludeKeysToggle t={t} />
         </div>
 
@@ -1717,7 +1771,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
               <Input type="file" accept=".json" onChange={handleImportFile} className="peer sr-only" id="import-file-input" />
               <label
                 htmlFor="import-file-input"
-                className="cursor-pointer px-4 py-2 bg-muted dark:bg-muted/40 hover:bg-accent dark:hover:bg-accent text-foreground dark:text-muted-foreground rounded-lg transition-colors inline-block peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2"
+                className="cursor-pointer px-4 py-2 bg-muted dark:bg-muted/40 hover:bg-accent dark:hover:bg-accent text-foreground dark:text-muted-foreground rounded-lg transition-colors inline-block peer-focus-visible:ring-2 peer-focus-visible:ring-(--ui-focus-ring) peer-focus-visible:ring-offset-2"
               >
                 {t('dataManagementPanel.select-file')}
               </label>
@@ -1944,7 +1998,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
                       }))
                     }
                     placeholder={t('dataManagementPanel.enter-github-username')}
-                    className="w-full px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-ring dark:bg-muted/40 dark:text-foreground"
+                    className="w-full px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-(--ui-focus-ring) dark:bg-muted/40 dark:text-foreground"
                   />
                 </div>
               )}

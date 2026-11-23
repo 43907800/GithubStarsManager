@@ -26,8 +26,8 @@ docker-compose up -d
 
 Available image tags (all role-specific images share the same tagging scheme):
 - `latest` — latest build from the `main` branch
-- `v0.8.2` — the exact release tag; it must match the root `package.json` client version
-- `0.8.2`, `0.8`, `0` — convenience semver tags derived from the same `v0.8.2` release
+- `v0.8.4` — the exact release tag; it must match the root `package.json` client version
+- `0.8.4`, `0.8`, `0` — convenience semver tags derived from the same `v0.8.4` release
 - `sha-abc1234` — specific commit builds
 
 The root `package.json` is the single version source for desktop clients and Docker releases. A release workflow rejects a Git tag unless it is exactly `v` plus that file's `version`, so matching release image tags and client versions are published together.
@@ -61,8 +61,8 @@ curl http://localhost:8080/api/health
 You can also run the full-stack image directly. The data volume stores SQLite data and an automatically generated encryption key, so keep the `-v` option when upgrading or recreating the container. A direct `docker run` does not load Compose's `.env` file; export `IMAGE_TAG` (or replace it inline) to pin the image version.
 
 ```bash
-# Set this to 0.8.2 for a version-pinned deployment, or latest for main.
-export IMAGE_TAG=0.8.2
+# Set this to 0.8.4 for a version-pinned deployment, or latest for main.
+export IMAGE_TAG=0.8.4
 
 docker run -d \
   --name github-stars-manager-fullstack \
@@ -74,11 +74,15 @@ docker run -d \
 
 For a new deployment, omit `ENCRYPTION_KEY` and the service generates a key in the persisted data volume. If an existing deployment already uses `ENCRYPTION_KEY`, always pass the **exact same value** on every recreation and during migration; an environment-provided key overrides the file key, and changing it makes already encrypted credentials unreadable.
 
+The full-stack image serves plain HTTP unless you put it behind TLS. Because it sends `upgrade-insecure-requests` by default, add `-e CSP_UPGRADE_INSECURE_REQUESTS=false` when you open it directly over `http://<host>:8080` from another machine. Without it the browser rewrites the app's own assets to `https://` and the page stays blank. Keep the default when a reverse proxy terminates TLS.
+
 For Compose deployments, add `IMAGE_TAG` to the same `.env` file to pin a full-stack version:
 
 ```bash
 API_SECRET=replace-with-a-long-random-secret
-IMAGE_TAG=0.8.2
+IMAGE_TAG=0.8.4
+# Only for plain-HTTP access from another machine (no TLS proxy in front).
+# CSP_UPGRADE_INSECURE_REQUESTS=false
 # Set this only when preserving an existing environment-provided key.
 # ENCRYPTION_KEY=the-exact-existing-key
 ```
@@ -132,8 +136,8 @@ To pin specific versions in `docker-compose.yml`, set `BACKEND_IMAGE_TAG` and/or
 `FRONTEND_IMAGE_TAG` in your `.env` file:
 
 ```bash
-BACKEND_IMAGE_TAG=0.8.2
-FRONTEND_IMAGE_TAG=0.8.2
+BACKEND_IMAGE_TAG=0.8.4
+FRONTEND_IMAGE_TAG=0.8.4
 ```
 
 ## Backend Server (docker run)
@@ -141,7 +145,7 @@ FRONTEND_IMAGE_TAG=0.8.2
 The backend image is published to GHCR and can be run standalone. New standalone deployments should use the canonical `-backend` image. The legacy `-server` image remains published with identical tags exclusively for existing `docker-compose.yml` and direct deployments, so no current user must change an image reference.
 
 ```bash
-# Basic — no auth, port 3000, data persisted in volume
+# Basic — auto-generated API secret, port 3000, data persisted in volume
 docker run -d \
   --name github-stars-backend \
   -v github-stars-data:/app/data \
@@ -170,7 +174,8 @@ docker run -d \
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `API_SECRET` | Optional for standalone backend | `null` (auth disabled) | Bearer token for API authentication. It is required by `docker-compose.fullstack.yml` so the new single-container web service cannot start unauthenticated. |
+| `API_SECRET` | Optional for standalone backend | Auto-generated (saved to `data/.api-secret`) | Bearer token for API authentication. If unset, a secure random secret is generated on first start and persisted to `data/.api-secret`; all `/api` requests then require it as a Bearer token. Retrieve it once via `docker exec <backend-container> cat /app/data/.api-secret` (the secret value is never written to logs), then enter it as the client API Secret; if the file is unavailable, set the `API_SECRET` environment variable explicitly on the container. Required by `docker-compose.fullstack.yml` so the new single-container web service cannot start unauthenticated. |
+| `ALLOW_INSECURE_NO_AUTH` | No | unset | Set to `1` or `true` to restore the legacy zero-config dev mode when `API_SECRET` is unset: `/api` accepts unauthenticated requests and the server logs a loud warning. Never enable this on a publicly reachable deployment. |
 | `ENCRYPTION_KEY` | No | Auto-generated (saved to `data/.encryption-key`) | AES-256 key for encrypting stored secrets. Accepts any format — 64-char hex, shorter hex, base64, or plain text (all normalized via SHA-256) |
 | `PORT` | No | `3000` | Server listening port |
 | `DB_PATH` | No | `data/data.db` | Path to SQLite database file |
@@ -190,8 +195,8 @@ To customize secrets and image versions, create a `.env` file in the project roo
 ```bash
 API_SECRET=my-strong-secret
 ENCRYPTION_KEY=my-encryption-key
-BACKEND_IMAGE_TAG=0.8.2    # pin backend image version (default: latest)
-FRONTEND_IMAGE_TAG=0.8.2   # pin frontend image version (default: latest)
+BACKEND_IMAGE_TAG=0.8.4    # pin backend image version (default: latest)
+FRONTEND_IMAGE_TAG=0.8.4   # pin frontend image version (default: latest)
 # BACKEND_HOST=backend:3000 # target for the frontend's /api proxy (default: backend:3000)
 ```
 

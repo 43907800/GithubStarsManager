@@ -21,7 +21,7 @@ docker login ghcr.io -u YOUR_GITHUB_USERNAME
 
 密码应使用具有 `read:packages` 权限的 [GitHub Personal Access Token](https://github.com/settings/tokens)。
 
-所有角色镜像均使用相同的标签语义：`latest` 表示 `main` 的最新构建；`v0.8.2` 表示与客户端完全一致的正式发布标签；`0.8.2`、`0.8`、`0` 是由该正式标签派生的便捷标签；`sha-abc1234` 表示指定提交。根目录 `package.json` 的 `version` 是客户端和 Docker 正式发布的唯一版本来源；只有与该版本完全匹配的 `v<version>` Git 标签才能发布正式镜像。发布镜像同时包含 `linux/amd64` 与 `linux/arm64` 变体，Docker 会根据宿主机架构自动选择 x86_64 或 ARM64 版本。
+所有角色镜像均使用相同的标签语义：`latest` 表示 `main` 的最新构建；`v0.8.4` 表示与客户端完全一致的正式发布标签；`0.8.4`、`0.8`、`0` 是由该正式标签派生的便捷标签；`sha-abc1234` 表示指定提交。根目录 `package.json` 的 `version` 是客户端和 Docker 正式发布的唯一版本来源；只有与该版本完全匹配的 `v<version>` Git 标签才能发布正式镜像。发布镜像同时包含 `linux/amd64` 与 `linux/arm64` 变体，Docker 会根据宿主机架构自动选择 x86_64 或 ARM64 版本。
 
 ## 方式一：继续使用现有前后端分离部署
 
@@ -40,8 +40,8 @@ docker compose up -d
 ```bash
 API_SECRET=your-api-secret
 ENCRYPTION_KEY=your-encryption-key
-BACKEND_IMAGE_TAG=0.8.2
-FRONTEND_IMAGE_TAG=0.8.2
+BACKEND_IMAGE_TAG=0.8.4
+FRONTEND_IMAGE_TAG=0.8.4
 # BACKEND_HOST=backend:3000
 ```
 
@@ -83,16 +83,18 @@ curl http://localhost:8080/api/health
 如需固定版本，在 `.env` 中设置：
 
 ```bash
-IMAGE_TAG=0.8.2
+IMAGE_TAG=0.8.4
 API_SECRET=your-api-secret
 ENCRYPTION_KEY=your-encryption-key
+# 仅当从其他机器通过纯 HTTP 访问、且前面没有 TLS 反代时取消注释
+# CSP_UPGRADE_INSECURE_REQUESTS=false
 ```
 
 不使用 Compose 时，可直接运行镜像。直接执行 `docker run` 不会读取 Compose 的 `.env`，请导出 `IMAGE_TAG`（或在命令中直接替换）以固定镜像版本：
 
 ```bash
 # 固定到客户端同版本的镜像；也可以改为 latest 使用 main 的最新构建。
-export IMAGE_TAG=0.8.2
+export IMAGE_TAG=0.8.4
 
 docker run -d \
   --name github-stars-manager-fullstack \
@@ -103,6 +105,8 @@ docker run -d \
 ```
 
 新部署可以不传 `ENCRYPTION_KEY`，服务会在持久化数据卷中生成并保存密钥。如果已有部署显式设置了 `ENCRYPTION_KEY`，每次重建和迁移时都必须传入**完全相同的值**；环境变量密钥优先于数据卷内的文件密钥，变更它会导致原先加密的凭据无法读取。
+
+全栈镜像默认以纯 HTTP 提供服务（除非放在终止 TLS 的反代之后），并默认发送 `upgrade-insecure-requests`。如果要从其他机器直接通过 `http://<主机>:8080` 访问，请加上 `-e CSP_UPGRADE_INSECURE_REQUESTS=false`；否则浏览器会把应用自身资源改写为 `https://`，页面保持空白。由反代终止 TLS 时请保留默认值。
 
 本地构建全栈镜像时，请明确指定新的 Dockerfile：
 
@@ -200,7 +204,8 @@ docker compose up -d
 
 | 变量 | 分离部署 | 全栈部署 | 说明 |
 |---|---:|---:|---|
-| `API_SECRET` | 可选 | 全栈 Compose 必填 | 后端 API 的 Bearer Token；独立后端未设置时禁用认证。全栈 Compose 必须设置，以避免新服务无认证启动。 |
+| `API_SECRET` | 可选（未设置时自动生成） | 全栈 Compose 必填 | 后端 API 的 Bearer Token。分离部署未设置时，会在首次启动自动生成安全随机密钥并保存到数据卷的 `data/.api-secret`，此后所有 `/api` 请求都要求以它作为 Bearer 令牌认证；可通过 `docker exec <后端容器> cat /app/data/.api-secret` 取回一次（密钥值不会写入日志），再填入客户端 API Secret 输入框；若该文件不可用，需在容器上显式设置 `API_SECRET` 环境变量。全栈 Compose 必须显式设置，以避免新服务无认证启动。 |
+| `ALLOW_INSECURE_NO_AUTH` | 可选 | 不适用 | 设为 `1` 或 `true` 可在 `API_SECRET` 未设置时恢复旧的零配置开发模式：`/api` 接受未认证请求，同时服务器会输出醒目警告。切勿在公网可达的部署上开启。 |
 | `ENCRYPTION_KEY` | 可选 | 可选 | 用于加密服务端保存的密钥；未设置时生成并保存至数据卷。 |
 | `DB_PATH` | 可选 | 可选 | SQLite 文件路径，默认位于 `data/data.db`。 |
 | `PORT` | 可选 | 可选 | Node 服务端口，默认 3000；全栈 Compose 默认将宿主机 8080 映射至容器 3000。 |

@@ -5,6 +5,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from './ui/dialog';
+import { useScrollbarFlash } from '../hooks/useScrollbarFlash';
 import { cn } from '../lib/utils';
 
 type DialogContentPointerDownOutsideHandler = NonNullable<
@@ -17,10 +18,16 @@ interface ModalProps {
   title: string;
   children: React.ReactNode;
   maxWidth?: string;
+  fullscreen?: boolean;
   footer?: React.ReactNode;
   scrollable?: boolean;
+  contentClassName?: string;
+  /** 追加到 DialogContent 的类名（如弹窗内页面自己滚动的 overflow-hidden）。 */
+  dialogClassName?: string;
   onPointerDownOutside?: DialogContentPointerDownOutsideHandler;
   onOverlayPointerDown?: React.PointerEventHandler<HTMLDivElement>;
+  onCloseAutoFocus?: React.ComponentProps<typeof DialogContent>['onCloseAutoFocus'];
+  closeLabel?: string;
 }
 
 export const Modal: React.FC<ModalProps> = ({
@@ -29,35 +36,17 @@ export const Modal: React.FC<ModalProps> = ({
   title,
   children,
   maxWidth = 'max-w-md',
+  fullscreen = false,
   footer,
   scrollable = false,
+  contentClassName,
+  dialogClassName,
   onPointerDownOutside,
   onOverlayPointerDown,
+  onCloseAutoFocus,
+  closeLabel,
 }) => {
-  const [isScrolling, setIsScrolling] = React.useState(false);
-  const scrollStopTimerRef = React.useRef<number | null>(null);
-
-  React.useEffect(() => () => {
-    if (scrollStopTimerRef.current) window.clearTimeout(scrollStopTimerRef.current);
-  }, []);
-
-  React.useEffect(() => {
-    if (isOpen) return;
-    if (scrollStopTimerRef.current) {
-      window.clearTimeout(scrollStopTimerRef.current);
-      scrollStopTimerRef.current = null;
-    }
-    setIsScrolling(false);
-  }, [isOpen]);
-
-  const handleScroll = () => {
-    setIsScrolling(true);
-    if (scrollStopTimerRef.current) window.clearTimeout(scrollStopTimerRef.current);
-    scrollStopTimerRef.current = window.setTimeout(() => {
-      setIsScrolling(false);
-      scrollStopTimerRef.current = null;
-    }, 700);
-  };
+  const { isScrolling, handleScroll } = useScrollbarFlash(isOpen);
 
   const content = scrollable ? (
     <>
@@ -66,7 +55,7 @@ export const Modal: React.FC<ModalProps> = ({
       </DialogHeader>
       <div
         data-testid="modal-scroll-area"
-        className={cn('min-h-0 flex-1 overflow-y-auto px-6 py-5 scrollbar-on-scroll', isScrolling && 'scrolling')}
+        className={cn('min-h-0 flex-1 overflow-y-auto px-6 py-5 scrollbar-on-scroll', isScrolling && 'scrolling', contentClassName)}
         onScroll={handleScroll}
       >
         {children}
@@ -82,7 +71,7 @@ export const Modal: React.FC<ModalProps> = ({
       <DialogHeader>
         <DialogTitle>{title}</DialogTitle>
       </DialogHeader>
-      <div className="min-w-0">{children}</div>
+      <div className={cn('min-w-0', contentClassName)}>{children}</div>
     </>
   );
 
@@ -90,11 +79,18 @@ export const Modal: React.FC<ModalProps> = ({
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         aria-describedby={undefined}
-        className={cn(maxWidth, scrollable && 'flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0')}
+        fullscreen={fullscreen}
+        className={cn(
+          scrollable && 'flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0',
+          !fullscreen && maxWidth,
+          dialogClassName,
+        )}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
         onPointerDownOutside={onPointerDownOutside}
         onOverlayPointerDown={onOverlayPointerDown}
+        onCloseAutoFocus={onCloseAutoFocus}
+        closeLabel={closeLabel}
       >
         {content}
       </DialogContent>

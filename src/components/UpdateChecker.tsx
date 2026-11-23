@@ -6,6 +6,8 @@ import { useUpdateActions, type VersionInfo } from '../features/settings/hooks/u
 import { useAppStore } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useDialog } from '../hooks/useDialog';
+import { useScrollbarFlash } from '../hooks/useScrollbarFlash';
+import { cn } from '../lib/utils';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
 
@@ -14,9 +16,10 @@ interface UpdateCheckerProps {
 }
 
 export const UpdateChecker: React.FC<UpdateCheckerProps> = ({ onUpdateAvailable }) => {
-  const { language, setUpdateNotification } = useAppStore(useShallow((state) => ({
+  const { language, setUpdateNotification, setUpdatePromptDismissedVersion } = useAppStore(useShallow((state) => ({
     language: state.language,
     setUpdateNotification: state.setUpdateNotification,
+    setUpdatePromptDismissedVersion: state.setUpdatePromptDismissedVersion,
   })));
   const { toast } = useDialog();
   const { checkForUpdates: checkForUpdatesRemote, openDownloadUrl } = useUpdateActions();
@@ -24,6 +27,7 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({ onUpdateAvailable 
   const [updateInfo, setUpdateInfo] = useState<VersionInfo | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { isScrolling: isChangelogScrolling, handleScroll: handleChangelogScroll } = useScrollbarFlash(showUpdateDialog);
 
   const t = useT('app');
 
@@ -63,6 +67,17 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({ onUpdateAvailable 
     }
   };
 
+  // 不再提示当前版本：记录版本号后，自动检查在该版本仍为最新时不再弹提示；
+  // 最新版再次变化（发布更新版本）后自动恢复提示。
+  const handleDontRemind = () => {
+    if (updateInfo) {
+      setUpdatePromptDismissedVersion(updateInfo.number);
+      // 同步移除本次会话可能存在的顶部横幅，避免与"不再提示"自相矛盾
+      setUpdateNotification(null);
+    }
+    setShowUpdateDialog(false);
+  };
+
   const formatDate = (dateString: string) => {
     try {
       return new Date(dateString).toLocaleDateString(getIntlLocale(language));
@@ -83,21 +98,28 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({ onUpdateAvailable 
       </div>
 
       <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
-        <DialogContent className="max-w-md" closeLabel={t('updateChecker.close')}>
-          <DialogHeader>
+        <DialogContent className="max-w-2xl flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0" closeLabel={t('updateChecker.close')}>
+          <DialogHeader className="shrink-0 space-y-3 border-b border-border px-6 py-5 pr-12">
             <div className="flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/20"><Package className="h-6 w-6 text-primary" /></div>
               <div><DialogTitle>{t('updateChecker.new-version-available')}</DialogTitle><DialogDescription>v{updateInfo?.number}</DialogDescription></div>
             </div>
+            {updateInfo && <div className="flex items-center gap-2 text-sm text-muted-foreground dark:text-muted-foreground"><Calendar className="h-4 w-4" /><span>{t('updateChecker.release-date')} {formatDate(updateInfo.releaseDate)}</span></div>}
           </DialogHeader>
-          {updateInfo && <div className="space-y-4">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground dark:text-muted-foreground"><Calendar className="h-4 w-4" /><span>{t('updateChecker.release-date')} {formatDate(updateInfo.releaseDate)}</span></div>
-            <div>
+          {updateInfo && (
+            <div
+              className={cn('min-h-0 flex-1 overflow-y-auto px-6 py-5 scrollbar-on-scroll', isChangelogScrolling && 'scrolling')}
+              onScroll={handleChangelogScroll}
+              tabIndex={0}
+              role="region"
+              aria-label={t('updateChecker.what-s-new')}
+            >
               <h4 className="mb-2 font-medium text-foreground dark:text-foreground">{t('updateChecker.what-s-new')}</h4>
               <ul className="space-y-1">{updateInfo.changelog.map((item, index) => <li key={index} className="flex items-start gap-2 text-sm text-muted-foreground dark:text-muted-foreground"><span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" /><span>{item}</span></li>)}</ul>
             </div>
-          </div>}
-          <DialogFooter>
+          )}
+          <DialogFooter className="shrink-0 border-t border-border px-6 py-4">
+            <Button type="button" variant="ghost" onClick={handleDontRemind}>{t('updateChecker.dont-remind-again')}</Button>
             <Button type="button" onClick={handleDownload} className="gap-2"><ExternalLink className="h-4 w-4" /><span>{t('updateChecker.download-now')}</span></Button>
             <Button type="button" variant="outline" onClick={() => setShowUpdateDialog(false)}>{t('updateChecker.later')}</Button>
           </DialogFooter>

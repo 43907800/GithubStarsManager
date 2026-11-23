@@ -16,7 +16,10 @@ const TOP_LEVEL_FIELDS = new Set([
   'contributes',
 ]);
 const CONTRIBUTION_FIELDS = new Set(['repositoryActions', 'repositoryProcessors', 'releaseProcessors', 'exporters', 'pages']);
-const REPOSITORY_ACTION_FIELDS = new Set(['id', 'title', 'icon', 'placement']);
+const REPOSITORY_ACTION_FIELDS = new Set(['id', 'title', 'icon', 'placement', 'opensPage', 'display']);
+// V1.6 弹窗动作展示形态：popup 是非全屏的小弹窗，fullscreen 是既有全屏弹窗；
+// 缺省一律按 fullscreen 处理，旧插件无需改动。
+const ACTION_DISPLAY_MODES = new Set(['fullscreen', 'popup']);
 const PROCESSOR_FIELDS = new Set(['id', 'title']);
 const EXPORTER_FIELDS = new Set(['id', 'title', 'fileExtension', 'mimeType']);
 const PAGE_FIELDS = new Set(['id', 'title', 'entry']);
@@ -100,6 +103,23 @@ function validateRepositoryActions(actions) {
     }
     if ('icon' in action && (typeof action.icon !== 'string' || action.icon.trim() === '')) {
       return failure('MANIFEST_FIELD_INVALID', `Manifest field '${prefix}.icon' must be a non-empty string`);
+    }
+    if ('opensPage' in action) {
+      if (typeof action.opensPage !== 'string' || !CONTRIBUTION_ID_RE.test(action.opensPage)) {
+        return failure('MANIFEST_FIELD_INVALID', `Manifest field '${prefix}.opensPage' must be a valid page id`);
+      }
+      if (action.placement !== 'repository-card') {
+        return failure('MANIFEST_FIELD_INVALID', `Manifest field '${prefix}.opensPage' requires placement 'repository-card'`);
+      }
+    }
+    if ('display' in action) {
+      if (!ACTION_DISPLAY_MODES.has(action.display)) {
+        return failure('MANIFEST_FIELD_INVALID', `Manifest field '${prefix}.display' must be 'fullscreen' or 'popup'`);
+      }
+      // display 只对弹窗动作有意义：普通动作（运行 Worker）不接受它。
+      if (!('opensPage' in action)) {
+        return failure('MANIFEST_FIELD_INVALID', `Manifest field '${prefix}.display' requires 'opensPage'`);
+      }
     }
   }
   return null;
@@ -233,6 +253,20 @@ function validateManifest(input) {
     const error = validatePages(input.contributes.pages);
     if (error) return error;
   }
+  // V1.4 弹窗动作：opensPage 必须指向本插件声明的一个页面。这类动作不启动
+  // Node Worker，只让宿主在用户点击时把插件页面装进弹窗，因此不参与
+  // “运行时贡献必须提供 main”的判定。
+  const declaredPageIds = new Set((input.contributes.pages || []).map((page) => page.id));
+  const opensPageActions = (input.contributes.repositoryActions || [])
+    .filter((action) => 'opensPage' in action);
+  for (const action of opensPageActions) {
+    if (!declaredPageIds.has(action.opensPage)) {
+      return failure(
+        'MANIFEST_FIELD_INVALID',
+        `Manifest field 'contributes.repositoryActions' opensPage '${action.opensPage}' does not match a contributed page`
+      );
+    }
+  }
   if ('repositoryProcessors' in input.contributes) {
     const error = validateSimpleContributions(
       input.contributes.repositoryProcessors,
@@ -291,12 +325,15 @@ function validateManifest(input) {
   if (!hasMain && !hasPage) {
     return failure('MANIFEST_FIELD_REQUIRED', "Manifest requires either 'main' or a contributed page entry");
   }
+  const workerActionCount = Array.isArray(input.contributes.repositoryActions)
+    ? input.contributes.repositoryActions.filter((action) => !('opensPage' in action)).length
+    : 0;
   const hasRuntimeContribution = [
-    input.contributes.repositoryActions,
-    input.contributes.repositoryProcessors,
-    input.contributes.releaseProcessors,
-    input.contributes.exporters,
-  ].some((items) => Array.isArray(items) && items.length > 0);
+    workerActionCount > 0,
+    Array.isArray(input.contributes.repositoryProcessors) && input.contributes.repositoryProcessors.length > 0,
+    Array.isArray(input.contributes.releaseProcessors) && input.contributes.releaseProcessors.length > 0,
+    Array.isArray(input.contributes.exporters) && input.contributes.exporters.length > 0,
+  ].some((present) => present);
   if (!hasMain && hasRuntimeContribution) {
     return failure('MANIFEST_FIELD_REQUIRED', "Manifest field 'main' is required for runtime contributions");
   }

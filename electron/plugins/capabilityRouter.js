@@ -1,8 +1,19 @@
 'use strict';
 
 const { protocolError } = require('./pluginProtocol');
+const { isOpenExternalUrlAllowed } = require('./pluginPageBridge');
 
-function createCapabilityRouter({ storage, logger, catalog }) {
+// 页面 Bridge 的系统输出操作（剪贴板、宿主下载）由宿主注入实现；路由器只做
+// 权限检查与参数解码。Worker 侧的 router 不注入 hostOperations，因此这些
+// capability 对 Worker 不可用。
+function createCapabilityRouter({ storage, logger, catalog, hostOperations = null }) {
+  function requireHostOperation(capability, operation) {
+  const handler = hostOperations?.[operation];
+  if (typeof handler !== 'function') {
+    throw protocolError('PLUGIN_CAPABILITY_UNAVAILABLE', `Capability '${capability}' is not available for this caller`);
+  }
+  return handler;
+}
   return {
     async handle(permissions, request) {
       if (!request || typeof request !== 'object' || typeof request.capability !== 'string') {
@@ -11,6 +22,32 @@ function createCapabilityRouter({ storage, logger, catalog }) {
       if (request.capability === 'log') {
         logger.log(request.operation, request.args?.message, request.args?.metadata);
         return null;
+      }
+      if (request.capability === 'clipboard') {
+        if (!permissions.includes('clipboard:write')) {
+          throw protocolError('PLUGIN_PERMISSION_DENIED', "Permission 'clipboard:write' is required");
+        }
+        if (request.operation === 'write') {
+          return requireHostOperation('clipboard', 'clipboardWrite')({ text: request.args?.text });
+        }
+        if (request.operation === 'writeImage') {
+          const buffer = Buffer.from(request.args?.dataBase64 ?? '', 'base64');
+          return requireHostOperation('clipboard', 'clipboardWriteImage')({ buffer });
+        }
+        throw protocolError('PLUGIN_CAPABILITY_UNKNOWN', `Unknown clipboard operation '${request.operation}'`);
+      }
+      if (request.capability === 'downloads') {
+        if (!permissions.includes('downloads:create')) {
+          throw protocolError('PLUGIN_PERMISSION_DENIED', "Permission 'downloads:create' is required");
+        }
+        if (request.operation === 'saveFile') {
+          const buffer = Buffer.from(request.args?.dataBase64 ?? '', 'base64');
+          return requireHostOperation('downloads', 'saveFile')({
+            fileName: request.args?.fileName,
+            buffer,
+          });
+        }
+        throw protocolError('PLUGIN_CAPABILITY_UNKNOWN', `Unknown downloads operation '${request.operation}'`);
       }
       if (request.capability === 'ai') {
         if (request.operation !== 'generate') {
@@ -32,6 +69,20 @@ function createCapabilityRouter({ storage, logger, catalog }) {
         // The user-configured search endpoint is contacted only after confirmation.
         return null;
       }
+      if (request.capability === 'network') {
+        if (request.operation !== 'request') {
+          throw protocolError('PLUGIN_CAPABILITY_UNKNOWN', `Unknown network operation '${request.operation}'`);
+        }
+        // 按 `network:<host>` 逐主机授权；host/path 白名单在 page bridge 已校验，
+        // Worker 调用没有这道前置校验，因此这里仍要求 host 是非空字符串。
+        const host = request.args?.host;
+        if (typeof host !== 'string' || !host || !permissions.includes(`network:${host}`)) {
+          throw protocolError('PLUGIN_PERMISSION_DENIED', `Permission 'network:<host>' is required`);
+        }
+        // Authorization only: the renderer executes the request with the user's
+        // own GitHub token after this check, mirroring ai/web capabilities.
+        return null;
+      }
       if (request.capability === 'github') {
         if (request.operation === 'getRelease') {
           if (!permissions.includes('releases:read')) {
@@ -47,6 +98,19 @@ function createCapabilityRouter({ storage, logger, catalog }) {
           return catalog.searchRepositories(request.args?.query, request.args?.limit);
         }
         throw protocolError('PLUGIN_CAPABILITY_UNKNOWN', `Unknown GitHub operation '${request.operation}'`);
+      }
+      if (request.capability === 'shell') {
+        if (request.operation !== 'openExternal') {
+          throw protocolError('PLUGIN_CAPABILITY_UNKNOWN', `Unknown shell operation '${request.operation}'`);
+        }
+        if (!permissions.includes('external:open')) {
+          throw protocolError('PLUGIN_PERMISSION_DENIED', "Permission 'external:open' is required");
+        }
+        // 与 page bridge 同一套 http/https 白名单；主进程宿主操作是最后一道复核。
+        if (!isOpenExternalUrlAllowed(request.args?.url)) {
+          throw protocolError('PLUGIN_CAPABILITY_REQUEST_INVALID', 'Open-external URL is invalid');
+        }
+        return requireHostOperation('shell', 'openExternal')({ url: request.args.url });
       }
       if (request.capability !== 'storage') {
         throw protocolError('PLUGIN_CAPABILITY_UNKNOWN', `Unknown capability '${request.capability}'`);
